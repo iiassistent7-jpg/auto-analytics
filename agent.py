@@ -21,7 +21,7 @@ ANTHROPIC_KEY = os.environ.get("ANTHROPIC_KEY", "")
 # Google Sheets IDs
 MAYA_LEADS_SHEET = os.environ.get("MAYA_LEADS_SHEET", "1ZM-rN0dlUdeQhgFltodlPW9KIuvtdsIb2QkcjzZtvKI")
 CARCITY_LEADS_SHEET = os.environ.get("CARCITY_LEADS_SHEET", "1Y2X_nDDnyfQiadHO-B07IhaqZPCHVr7XU583_gaNlYM")
-SALES_SHEET = os.environ.get("SALES_SHEET", "12GZ6qg_t9IPlwp0p4dN6-JQ281VGa_nsDzN_NwRD1TE")
+SALES_SHEET = os.environ.get("SALES_SHEET", "12GZ6qg_t9lPlwp0p4dN6-JQ281VGa_nsDzN_NwRD1TE")
 
 # Google Calendar
 CALENDAR_ID = os.environ.get("CALENDAR_ID", "6adb497d70d6f51fb1bfee8d5fda6661b9c61f79d88069ac4b0b843f2f9f4358@group.calendar.google.com")
@@ -327,10 +327,8 @@ def full_analytics(since=None, until=None):
         until = now
     if isinstance(since, str):
         since = parse_date(since) or (now - timedelta(days=30))
-    if hasattr(since, 'tzinfo') and since.tzinfo:
-        since = since.replace(tzinfo=None)
-    if hasattr(until, 'tzinfo') and until.tzinfo:
-        until = until.replace(tzinfo=None)
+    if isinstance(until, str):
+        until = parse_date(until) or now
     # Make dates timezone-naive for comparison
     if hasattr(since, 'tzinfo') and since.tzinfo:
         since = since.replace(tzinfo=None)
@@ -505,8 +503,8 @@ def generate_report(data, report_type="full"):
 # DASHBOARD PNG
 # ============================================================
 def generate_dashboard_png(data):
-    """Generate dashboard PNG using Playwright."""
-    from playwright.sync_api import sync_playwright
+    """Generate dashboard PNG using wkhtmltoimage (imgkit)."""
+    import subprocess
 
     leads = data.get("leads", {})
     meetings = data.get("meetings", {})
@@ -541,12 +539,7 @@ def generate_dashboard_png(data):
         conv = round(s_cnt / cnt * 100, 1) if cnt > 0 else 0
         col = colors.get(src, "#6b7280")
         if cnt > 0 or s_cnt > 0:
-            source_cards += f'''<div class="src-card">
-<div class="src-name" style="color:{col}">{src}</div>
-<div class="src-row"><span class="src-l">Лиды</span><span class="src-v">{cnt}</span></div>
-<div class="src-row"><span class="src-l">Продажи</span><span class="src-v">{s_cnt}</span></div>
-<div class="src-row"><span class="src-l">Конверсия</span><span class="src-v" style="color:{col}">{conv}%</span></div>
-</div>'''
+            source_cards += f'<div class="src-card"><div class="src-name" style="color:{col}">{src}</div><div class="src-row"><span class="src-l">Лиды</span><span class="src-v">{cnt}</span></div><div class="src-row"><span class="src-l">Продажи</span><span class="src-v">{s_cnt}</span></div><div class="src-row"><span class="src-l">Конверсия</span><span class="src-v" style="color:{col}">{conv}%</span></div></div>'
 
     # Funnel bars
     funnel_steps = []
@@ -566,107 +559,86 @@ def generate_dashboard_png(data):
         pct = ""
         if i > 0 and funnel_steps[i-1][1] > 0:
             pct = f"{round(val / funnel_steps[i-1][1] * 100, 1)}%"
-        funnel_html += f'''<div class="fs">
-<div class="fv">{pct}</div>
-<div class="fw"><div class="fb" style="width:{width}%;background:{color}"><span class="ft">{val}</span></div></div>
-<div class="fl">{label}</div></div>'''
+        funnel_html += f'<div class="fs"><div class="fv">{pct}</div><div class="fw"><div class="fb" style="width:{width}%;background:{color}"><span class="ft">{val}</span></div></div><div class="fl">{label}</div></div>'
 
-    # Lead form vs Message
     lf_count = comparison.get("lead_form_count", 0)
     msg_count = comparison.get("message_count", 0)
     lf_pct = comparison.get("lead_form_pct", 0)
     msg_pct = comparison.get("message_pct", 0)
 
     html = f'''<!DOCTYPE html><html><head><meta charset="UTF-8"><style>
-@import url('https://fonts.googleapis.com/css2?family=Unbounded:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap');
 *{{margin:0;padding:0;box-sizing:border-box}}
-body{{background:#06060c;color:#e8e8f0;font-family:'JetBrains Mono',monospace;width:1280px;overflow:hidden}}
-body::before{{content:'';position:fixed;top:-200px;left:-200px;width:600px;height:600px;background:radial-gradient(circle,rgba(240,192,64,.07)0%,transparent 65%);pointer-events:none}}
-.gr{{position:fixed;inset:0;background-image:linear-gradient(rgba(255,255,255,.015)1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.015)1px,transparent 1px);background-size:60px 60px;pointer-events:none}}
-.db{{position:relative;z-index:2;max-width:1240px;margin:0 auto;padding:32px 20px 24px}}
+body{{background:#06060c;color:#e8e8f0;font-family:Arial,Helvetica,sans-serif;width:1280px;overflow:hidden}}
+.db{{max-width:1240px;margin:0 auto;padding:32px 20px 24px}}
 .hd{{text-align:center;margin-bottom:36px}}
-.lg{{font-family:'Unbounded',sans-serif;font-size:40px;font-weight:900;background:linear-gradient(135deg,#f0c040,#ffd700,#f5d060,#b8922e);-webkit-background-clip:text;-webkit-text-fill-color:transparent}}
-.badge{{display:inline-block;padding:12px 28px;border:1px solid rgba(255,255,255,.06);border-radius:24px;font-size:20px;font-weight:700;color:#a0a0b8;background:rgba(18,18,28,.85);margin-top:12px}}
+.lg{{font-size:44px;font-weight:900;color:#f0c040}}
+.badge{{display:inline-block;padding:12px 28px;border:1px solid rgba(255,255,255,.1);border-radius:24px;font-size:20px;font-weight:700;color:#a0a0b8;background:rgba(18,18,28,.85);margin-top:12px}}
 .sb{{display:flex;align-items:center;justify-content:center;gap:10px;margin-top:18px}}
 .sd{{width:10px;height:10px;border-radius:50%}}
-.stx{{font-family:'Unbounded',sans-serif;font-size:20px;font-weight:800;letter-spacing:2px}}
-.sec{{font-family:'Unbounded',sans-serif;font-size:22px;font-weight:700;color:#e8e8f0;letter-spacing:4px;text-transform:uppercase;margin:36px 0 18px;text-align:center}}
-.g4{{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:14px}}
-.g3{{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-bottom:14px}}
-.g2{{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px}}
-.card{{background:rgba(18,18,28,.85);border:1px solid rgba(255,255,255,.06);border-radius:18px;padding:24px;text-align:center;box-shadow:0 4px 24px rgba(0,0,0,.4)}}
+.stx{{font-size:20px;font-weight:800;letter-spacing:2px}}
+.sec{{font-size:22px;font-weight:700;color:#e8e8f0;letter-spacing:4px;text-transform:uppercase;margin:36px 0 18px;text-align:center}}
+.g4{{display:flex;gap:14px;margin-bottom:14px}}
+.g4 .card{{flex:1}}
+.g3{{display:flex;gap:14px;margin-bottom:14px}}
+.g3 .card{{flex:1}}
+.card{{background:rgba(18,18,28,.85);border:1px solid rgba(255,255,255,.08);border-radius:18px;padding:24px;text-align:center}}
 .cl{{font-size:18px;color:#a0a0b8;font-weight:700;text-transform:uppercase;letter-spacing:2px;margin-bottom:10px}}
-.cv{{font-family:'Unbounded',sans-serif;font-size:48px;font-weight:800;line-height:1}}
-.fcard{{background:rgba(18,18,28,.85);border:1px solid rgba(255,255,255,.06);border-radius:18px;padding:28px 24px;margin-bottom:14px;box-shadow:0 8px 32px rgba(0,0,0,.5)}}
-.fn{{display:flex;flex-direction:column;align-items:center;gap:6px;max-width:700px;margin:0 auto}}
-.fs{{display:flex;align-items:center;width:100%;gap:12px}}
-.fw{{flex:1;display:flex;justify-content:center}}
-.fb{{height:56px;border-radius:12px;display:flex;align-items:center;justify-content:center;position:relative;box-shadow:0 4px 16px rgba(0,0,0,.4)}}
-.ft{{font-family:'Unbounded',sans-serif;font-size:28px;font-weight:800;color:#fff;text-shadow:0 2px 4px rgba(0,0,0,.4)}}
-.fl{{font-size:20px;color:#e0e0f0;font-weight:700;text-transform:uppercase;letter-spacing:1px;width:180px}}
+.cv{{font-size:48px;font-weight:800;line-height:1}}
+.fcard{{background:rgba(18,18,28,.85);border:1px solid rgba(255,255,255,.08);border-radius:18px;padding:28px 24px;margin-bottom:14px}}
+.fn{{max-width:700px;margin:0 auto}}
+.fs{{display:flex;align-items:center;width:100%;gap:12px;margin-bottom:6px}}
+.fw{{flex:1}}
+.fb{{height:56px;border-radius:12px;display:flex;align-items:center;justify-content:center}}
+.ft{{font-size:28px;font-weight:800;color:#fff}}
+.fl{{font-size:20px;color:#e0e0f0;font-weight:700;text-transform:uppercase;width:180px}}
 .fv{{font-size:20px;font-weight:700;width:80px;text-align:right;color:#22c55e}}
-.src-grid{{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-bottom:14px}}
-.src-card{{background:rgba(18,18,28,.85);border:1px solid rgba(255,255,255,.06);border-radius:18px;padding:24px;box-shadow:0 4px 24px rgba(0,0,0,.4)}}
-.src-name{{font-family:'Unbounded',sans-serif;font-size:22px;font-weight:800;margin-bottom:14px;text-align:center}}
+.src-grid{{display:flex;flex-wrap:wrap;gap:14px;margin-bottom:14px}}
+.src-card{{flex:1;min-width:200px;background:rgba(18,18,28,.85);border:1px solid rgba(255,255,255,.08);border-radius:18px;padding:24px}}
+.src-name{{font-size:22px;font-weight:800;margin-bottom:14px;text-align:center}}
 .src-row{{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid rgba(255,255,255,.04)}}
 .src-l{{font-size:16px;color:#a0a0b8}}
 .src-v{{font-size:18px;font-weight:700}}
 .comp-bar{{display:flex;height:56px;border-radius:14px;overflow:hidden;margin:12px 0}}
-.comp-seg{{display:flex;align-items:center;justify-content:center;font-family:'Unbounded',sans-serif;font-size:22px;font-weight:700;color:#fff}}
-.pill-grid{{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}}
-.pill{{background:rgba(18,18,28,.85);border:1px solid rgba(255,255,255,.06);border-radius:14px;padding:20px;text-align:center;box-shadow:0 4px 16px rgba(0,0,0,.3)}}
-.pill-l{{font-size:20px;color:#e0e0f0;font-weight:700;text-transform:uppercase;letter-spacing:2px;margin-bottom:10px}}
-.pill-v{{font-family:'Unbounded',sans-serif;font-size:46px;font-weight:900}}
+.comp-seg{{display:flex;align-items:center;justify-content:center;font-size:20px;font-weight:700;color:#fff}}
+.pill-grid{{display:flex;gap:14px}}
+.pill{{flex:1;background:rgba(18,18,28,.85);border:1px solid rgba(255,255,255,.08);border-radius:14px;padding:20px;text-align:center}}
+.pill-l{{font-size:18px;color:#e0e0f0;font-weight:700;text-transform:uppercase;letter-spacing:2px;margin-bottom:10px}}
+.pill-v{{font-size:44px;font-weight:900}}
 .footer{{text-align:center;padding:24px 0 8px;font-size:12px;color:#3a3a50;letter-spacing:2px;text-transform:uppercase}}
-</style></head><body><div class="gr"></div><div class="db">
+</style></head><body><div class="db">
 <div class="hd">
 <div class="lg">AutoAnalytics</div>
 <div class="badge">{period_label}</div>
-<div class="sb">
-<div class="sd" style="background:#22c55e;box-shadow:0 0 12px rgba(34,197,94,.5)"></div>
-<div class="stx" style="color:#22c55e">АВТОБИЗНЕС</div></div></div>
-
+<div class="sb"><div class="sd" style="background:#22c55e;box-shadow:0 0 12px rgba(34,197,94,.5)"></div><div class="stx" style="color:#22c55e">АВТОБИЗНЕС</div></div></div>
 <div class="sec">Общая воронка</div>
 <div class="g4">
 <div class="card"><div class="cl">Лиды</div><div class="cv" style="color:#3b82f6">{total_leads}</div></div>
 <div class="card"><div class="cl">Встречи</div><div class="cv" style="color:#a855f7">{total_meetings}</div></div>
 <div class="card"><div class="cl">Продажи</div><div class="cv" style="color:#22c55e">{total_sales}</div></div>
-<div class="card"><div class="cl">Конверсия</div><div class="cv" style="color:#f0c040">{lead_to_sale}%</div></div>
-</div>
-
+<div class="card"><div class="cl">Конверсия</div><div class="cv" style="color:#f0c040">{lead_to_sale}%</div></div></div>
 <div class="sec">Воронка продаж</div>
 <div class="fcard"><div class="fn">{funnel_html}</div>
 <div style="display:flex;justify-content:center;gap:40px;margin-top:24px;font-size:24px;font-weight:800">
 <span style="color:#22c55e">Конверсия: {lead_to_sale}%</span>
-<span style="color:#ef4444">Недошедшие: {no_show_rate}%</span>
-</div></div>
-
+<span style="color:#ef4444">Недошедшие: {no_show_rate}%</span></div></div>
 <div class="sec">Источники</div>
 <div class="src-grid">{source_cards}</div>
-
 <div class="sec">Лид-форма vs Переписка</div>
-<div class="fcard">
-<div class="comp-bar">
-<div class="comp-seg" style="width:{lf_pct}%;background:linear-gradient(135deg,#3b82f6,#60a5fa)">Формы: {lf_count} ({lf_pct}%)</div>
-<div class="comp-seg" style="width:{max(msg_pct, 5)}%;background:linear-gradient(135deg,#a855f7,#c084fc)">Переписка: {msg_count} ({msg_pct}%)</div>
-</div></div>
-
+<div class="fcard"><div class="comp-bar">
+<div class="comp-seg" style="width:{max(lf_pct,5)}%;background:#3b82f6">Формы: {lf_count} ({lf_pct}%)</div>
+<div class="comp-seg" style="width:{max(msg_pct,5)}%;background:#a855f7">Переписка: {msg_count} ({msg_pct}%)</div></div></div>
 <div class="sec">Встречи</div>
 <div class="g3">
 <div class="card"><div class="cl">Всего встреч</div><div class="cv" style="color:#a855f7">{total_meetings}</div></div>
 <div class="card"><div class="cl">Состоялись</div><div class="cv" style="color:#22c55e">{completed}</div></div>
-<div class="card"><div class="cl">Не дошли</div><div class="cv" style="color:#ef4444">{no_show}</div></div>
-</div>
-
+<div class="card"><div class="cl">Не дошли</div><div class="cv" style="color:#ef4444">{no_show}</div></div></div>
 <div class="sec">Ключевые показатели</div>
 <div class="pill-grid">
-<div class="pill"><div class="pill-l">Лид → Встреча</div><div class="pill-v" style="color:#a855f7">{funnel.get("lead_to_meeting", 0)}%</div></div>
-<div class="pill"><div class="pill-l">Встреча → Продажа</div><div class="pill-v" style="color:#22c55e">{funnel.get("meeting_to_sale", 0)}%</div></div>
-<div class="pill"><div class="pill-l">Лид → Продажа</div><div class="pill-v" style="color:#f0c040">{lead_to_sale}%</div></div>
-<div class="pill"><div class="pill-l">Не дошли</div><div class="pill-v" style="color:#ef4444">{no_show_rate}%</div></div>
-</div>
-
-<div class="footer">AutoAnalytics Dashboard · АвтоАналитик · {date_str}</div>
+<div class="pill"><div class="pill-l">Лид-Встреча</div><div class="pill-v" style="color:#a855f7">{funnel.get("lead_to_meeting", 0)}%</div></div>
+<div class="pill"><div class="pill-l">Встреча-Продажа</div><div class="pill-v" style="color:#22c55e">{funnel.get("meeting_to_sale", 0)}%</div></div>
+<div class="pill"><div class="pill-l">Лид-Продажа</div><div class="pill-v" style="color:#f0c040">{lead_to_sale}%</div></div>
+<div class="pill"><div class="pill-l">Не дошли</div><div class="pill-v" style="color:#ef4444">{no_show_rate}%</div></div></div>
+<div class="footer">AutoAnalytics Dashboard · {date_str}</div>
 </div></body></html>'''
 
     html_path = tempfile.mktemp(suffix=".html", prefix="dash_")
@@ -674,16 +646,10 @@ body::before{{content:'';position:fixed;top:-200px;left:-200px;width:600px;heigh
     with open(html_path, "w", encoding="utf-8") as f:
         f.write(html)
     try:
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'])
-            page = browser.new_page(viewport={"width": 1280, "height": 800}, device_scale_factor=2)
-            page.goto(f"file://{html_path}", wait_until="networkidle")
-            page.wait_for_timeout(1500)
-            height = page.evaluate("document.documentElement.scrollHeight")
-            page.set_viewport_size({"width": 1280, "height": height})
-            page.wait_for_timeout(300)
-            page.screenshot(path=png_path, full_page=True, type="png")
-            browser.close()
+        subprocess.run([
+            "wkhtmltoimage", "--quality", "90", "--width", "1280",
+            "--enable-local-file-access", html_path, png_path
+        ], check=True, timeout=30, capture_output=True)
     finally:
         try:
             os.unlink(html_path)
