@@ -1,0 +1,8 @@
+pyTelegramBotAPI==4.21.0
+anthropic==0.42.0
+gspread==6.1.4
+google-auth==2.37.0
+google-api-python-client==2.159.0
+python-dateutil==2.9.0
+playwright==1.49.1
+schedule==1.2.2
