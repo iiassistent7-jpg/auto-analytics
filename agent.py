@@ -2,12 +2,10 @@ import os
 import json
 import time
 import tempfile
-import threading
-import schedule
 import telebot
 import anthropic
 import gspread
-import requests
+from flask import Flask, request as flask_request
 from datetime import datetime, timedelta, timezone
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
@@ -18,6 +16,8 @@ from googleapiclient.discovery import build
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
 MY_CHAT_ID = int(os.environ.get("MY_CHAT_ID", "0"))
 ANTHROPIC_KEY = os.environ.get("ANTHROPIC_KEY", "")
+RAILWAY_PUBLIC_DOMAIN = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "")
+PORT = int(os.environ.get("PORT", "8080"))
 
 # Google Sheets IDs
 MAYA_LEADS_SHEET = os.environ.get("MAYA_LEADS_SHEET", "1ZM-rN0dlUdeQhgFltodlPW9KIuvtdsIb2QkcjzZtvKI")
@@ -31,6 +31,7 @@ ISRAEL_UTC_OFFSET = 2
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 claude = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
+app = Flask(__name__)
 
 # ============================================================
 # GOOGLE AUTH
@@ -171,7 +172,6 @@ def read_carcity_leads(since=None, until=None):
                 continue
             if dt and until and dt > until:
                 continue
-            # Normalize source
             page_lower = page.lower()
             if "auto" in page_lower:
                 src = "AutoMotors"
@@ -185,7 +185,6 @@ def read_carcity_leads(since=None, until=None):
                 src = "TikTok"
             else:
                 src = page if page else "Unknown"
-            # Determine type
             is_lead_form = bool(page) and "сам" not in page_lower and "marketplace" not in page_lower
             leads.append({
                 "date": dt,
@@ -225,7 +224,6 @@ def read_sales(since=None, until=None):
             status = row[6].strip() if len(row) > 6 else ""
             if not status or "УЕХАЛ" not in status.upper():
                 continue
-            # Normalize source
             lid_upper = lid.upper()
             if "CAR CITY" in lid_upper:
                 src = "CarCity"
@@ -239,7 +237,6 @@ def read_sales(since=None, until=None):
                 src = "Organic"
             else:
                 src = lid if lid else "Unknown"
-            # Extract car info from notes
             car_info = notes.split(")")[0] + ")" if ")" in notes else notes[:50]
             sales.append({
                 "name": name,
@@ -258,8 +255,7 @@ def read_sales(since=None, until=None):
 # DATA: GOOGLE CALENDAR
 # ============================================================
 def read_calendar_meetings(since=None, until=None):
-    """Read meetings from Google Calendar.
-    30 min = cancelled/no-show, 60 min = completed."""
+    """Read meetings from Google Calendar."""
     try:
         creds = get_google_creds()
         service = build("calendar", "v3", credentials=creds)
@@ -301,7 +297,6 @@ def read_calendar_meetings(since=None, until=None):
                 duration_min = (e - s).total_seconds() / 60
             except:
                 duration_min = 0
-            # 30 min = no-show, 60 min = completed
             if duration_min <= 0:
                 continue
             status = "completed" if duration_min >= 50 else "no_show"
@@ -330,20 +325,17 @@ def full_analytics(since=None, until=None):
         since = parse_date(since) or (now - timedelta(days=30))
     if isinstance(until, str):
         until = parse_date(until) or now
-    # Make dates timezone-naive for comparison
     if hasattr(since, 'tzinfo') and since.tzinfo:
         since = since.replace(tzinfo=None)
     if hasattr(until, 'tzinfo') and until.tzinfo:
         until = until.replace(tzinfo=None)
 
-    # Read all data
     maya_leads = read_maya_leads(since, until)
     cc_leads = read_carcity_leads(since, until)
     all_leads = maya_leads + cc_leads
     sales = read_sales()
     meetings = read_calendar_meetings(since, until)
 
-    # Leads by source
     leads_by_source = {}
     for lead in all_leads:
         src = lead["source"]
@@ -352,7 +344,6 @@ def full_analytics(since=None, until=None):
         leads_by_source[src]["total"] += 1
         leads_by_source[src][lead["type"]] += 1
 
-    # Sales by source
     sales_by_source = {}
     for sale in sales:
         src = sale["source"]
@@ -360,26 +351,21 @@ def full_analytics(since=None, until=None):
             sales_by_source[src] = 0
         sales_by_source[src] += 1
 
-    # Meetings stats
     total_meetings = len(meetings)
     completed_meetings = sum(1 for m in meetings if m["status"] == "completed")
     no_show_meetings = sum(1 for m in meetings if m["status"] == "no_show")
     no_show_rate = round(no_show_meetings / total_meetings * 100, 1) if total_meetings > 0 else 0
 
-    # Funnel
     total_leads = len(all_leads)
     total_sales = len(sales)
-
-    # Lead form vs Message comparison
     lead_form_count = sum(1 for l in all_leads if l["type"] == "lead_form")
     message_count = sum(1 for l in all_leads if l["type"] == "message")
 
-    # Match leads to sales by phone
     lead_phones = set()
     for l in all_leads:
         p = l.get("phone", "").replace("-", "").replace(" ", "").strip()
         if p:
-            lead_phones.add(p[-7:])  # last 7 digits for matching
+            lead_phones.add(p[-7:])
 
     sales_from_leads = 0
     sales_from_other = 0
@@ -390,7 +376,6 @@ def full_analytics(since=None, until=None):
         else:
             sales_from_other += 1
 
-    # Conversion rates
     lead_to_meeting = round(total_meetings / total_leads * 100, 1) if total_leads > 0 else 0
     meeting_to_sale = round(total_sales / completed_meetings * 100, 1) if completed_meetings > 0 else 0
     lead_to_sale = round(total_sales / total_leads * 100, 1) if total_leads > 0 else 0
@@ -480,7 +465,6 @@ ANALYST_PROMPT = """Ты — аналитик автомобильного би�
 """
 
 def generate_report(data, report_type="full"):
-    """Generate analytical report using Claude."""
     prompt = f"Вот данные аналитики автобизнеса:\n\n{json.dumps(data, ensure_ascii=False, indent=2, default=str)}\n\n"
 
     if report_type == "full":
@@ -504,7 +488,6 @@ def generate_report(data, report_type="full"):
 # DASHBOARD PNG
 # ============================================================
 def generate_dashboard_png(data):
-    """Generate dashboard PNG using chromium headless."""
     import subprocess
 
     leads = data.get("leads", {})
@@ -529,7 +512,6 @@ def generate_dashboard_png(data):
     now = get_israel_now()
     date_str = now.strftime("%d.%m.%Y %H:%M")
 
-    # Source cards
     source_cards = ""
     sources = ["MayaCars", "CarCity", "AutoMotors", "TikTok", "Marketplace", "Organic"]
     colors = {"MayaCars": "#f0c040", "CarCity": "#3b82f6", "AutoMotors": "#a855f7", "TikTok": "#ef4444", "Marketplace": "#22c55e", "Organic": "#6b7280"}
@@ -542,7 +524,6 @@ def generate_dashboard_png(data):
         if cnt > 0 or s_cnt > 0:
             source_cards += f'<div class="src-card"><div class="src-name" style="color:{col}">{src}</div><div class="src-row"><span class="src-l">Лиды</span><span class="src-v">{cnt}</span></div><div class="src-row"><span class="src-l">Продажи</span><span class="src-v">{s_cnt}</span></div><div class="src-row"><span class="src-l">Конверсия</span><span class="src-v" style="color:{col}">{conv}%</span></div></div>'
 
-    # Funnel bars
     funnel_steps = []
     if total_leads > 0:
         funnel_steps.append(("Лиды", total_leads, 100, "#3b82f6"))
@@ -681,10 +662,7 @@ INTENT_PROMPT = """Ты определяешь намерение пользов
 Пример: dashboard week"""
 
 def detect_intent(text):
-    """Detect user intent using Claude."""
     text_lower = text.lower()
-
-    # Quick keyword detection
     if any(w in text_lower for w in ["дашборд", "dashboard", "картинк", "png", "визуал"]):
         intent = "dashboard"
     elif any(w in text_lower for w in ["воронк", "funnel", "конверси"]):
@@ -698,7 +676,6 @@ def detect_intent(text):
     elif any(w in text_lower for w in ["отчёт", "отчет", "report", "аналитик", "покажи", "статистик"]):
         intent = "full_report"
     else:
-        # Use Claude for complex intents
         result = call_claude(INTENT_PROMPT, text, max_tokens=50)
         if result:
             parts = result.strip().lower().split()
@@ -706,7 +683,6 @@ def detect_intent(text):
         else:
             intent = "chat"
 
-    # Detect period
     if "сегодн" in text_lower or "today" in text_lower:
         period = "today"
     elif "вчера" in text_lower or "yesterday" in text_lower:
@@ -725,7 +701,6 @@ def detect_intent(text):
     return intent, period
 
 def get_period_dates(period):
-    """Convert period name to since/until dates."""
     now = get_israel_now()
     if period == "today":
         since = now.replace(hour=0, minute=0, second=0)
@@ -745,7 +720,7 @@ def get_period_dates(period):
     return since, now
 
 # ============================================================
-# COMMANDS
+# BOT HANDLERS
 # ============================================================
 @bot.message_handler(commands=["start"])
 def cmd_start(message):
@@ -796,7 +771,6 @@ def cmd_dashboard(message):
         with open(png_path, 'rb') as photo:
             bot.send_photo(MY_CHAT_ID, photo, caption="📊 AutoAnalytics Dashboard")
         os.unlink(png_path)
-        # Send text summary too
         report = generate_report(data, "full")
         if report:
             safe_send(MY_CHAT_ID, report)
@@ -843,15 +817,11 @@ def cmd_meetings(message):
     except Exception as e:
         safe_send(MY_CHAT_ID, f"❌ Ошибка: {str(e)[:200]}")
 
-# ============================================================
-# FREE TEXT
-# ============================================================
 @bot.message_handler(func=lambda m: m.chat.id == MY_CHAT_ID)
 def handle_text(message):
     user_text = message.text.strip()
     intent, period = detect_intent(user_text)
     since, until = get_period_dates(period)
-
     period_names = {"today": "Сегодня", "yesterday": "Вчера", "week": "Неделя", "month": "Месяц", "3months": "3 месяца", "all": "Всё время"}
     plabel = period_names.get(period, "Месяц")
 
@@ -868,7 +838,6 @@ def handle_text(message):
                 safe_send(MY_CHAT_ID, report)
         except Exception as e:
             safe_send(MY_CHAT_ID, f"❌ Ошибка: {str(e)[:200]}")
-
     elif intent in ("full_report", "funnel", "sources", "meetings", "comparison"):
         safe_send(MY_CHAT_ID, f"📊 Анализирую ({plabel})...")
         try:
@@ -879,9 +848,7 @@ def handle_text(message):
                 safe_send(MY_CHAT_ID, report)
         except Exception as e:
             safe_send(MY_CHAT_ID, f"❌ Ошибка: {str(e)[:200]}")
-
     else:
-        # Chat mode — still try to answer with data context
         try:
             data = full_analytics()
             summary = json.dumps(data, ensure_ascii=False, default=str)[:2000]
@@ -892,9 +859,6 @@ def handle_text(message):
         except Exception as e:
             safe_send(MY_CHAT_ID, f"❌ Ошибка: {str(e)[:200]}")
 
-# ============================================================
-# VOICE MESSAGES
-# ============================================================
 @bot.message_handler(content_types=["voice"])
 def handle_voice(message):
     if message.chat.id != MY_CHAT_ID:
@@ -902,59 +866,39 @@ def handle_voice(message):
     safe_send(MY_CHAT_ID, "🎤 Голосовые пока не поддерживаются. Напиши текстом!")
 
 # ============================================================
-# FORCE STOP OTHER POLLING & START
+# WEBHOOK ROUTES
 # ============================================================
-def force_drop_polling():
-    """Call Telegram API directly to kill any existing polling sessions."""
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/deleteWebhook"
-    try:
-        resp = requests.post(url, json={"drop_pending_updates": True}, timeout=10)
-        print(f"deleteWebhook: {resp.status_code} {resp.text}")
-    except Exception as e:
-        print(f"deleteWebhook error: {e}")
+@app.route(f"/{TELEGRAM_TOKEN}", methods=["POST"])
+def webhook():
+    """Receive updates from Telegram via webhook."""
+    if flask_request.headers.get("content-type") == "application/json":
+        json_data = flask_request.get_data().decode("utf-8")
+        update = telebot.types.Update.de_json(json_data)
+        bot.process_new_updates([update])
+        return "OK", 200
+    return "Bad Request", 400
 
-    # Also call getUpdates with a short timeout to "steal" the polling lock
-    url2 = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates"
-    try:
-        resp2 = requests.post(url2, json={"offset": -1, "timeout": 0}, timeout=10)
-        print(f"getUpdates reset: {resp2.status_code}")
-    except Exception as e:
-        print(f"getUpdates reset error: {e}")
+@app.route("/", methods=["GET"])
+def health():
+    """Health check endpoint."""
+    return "AutoAnalytics Bot is running!", 200
 
+# ============================================================
+# STARTUP
+# ============================================================
 if __name__ == "__main__":
     print("🚗 АВТОАНАЛИТИК НА ПОСТУ!")
     print(f"📅 {get_israel_now().strftime('%Y-%m-%d %H:%M')}")
 
-    # Step 1: Force kill any existing polling
-    print("🔄 Сбрасываю предыдущие polling-сессии...")
-    force_drop_polling()
-    time.sleep(3)
-    force_drop_polling()
-    time.sleep(2)
+    # Remove any existing webhook and polling
+    bot.remove_webhook()
+    time.sleep(1)
 
-    # Step 2: Remove webhook just in case
-    bot.delete_webhook(drop_pending_updates=True)
-    time.sleep(2)
+    # Set webhook
+    webhook_url = f"https://{RAILWAY_PUBLIC_DOMAIN}/{TELEGRAM_TOKEN}"
+    bot.set_webhook(url=webhook_url)
+    print(f"🔗 Webhook: {webhook_url}")
 
-    # Step 3: Start polling with retry
-    print("📱 Запускаю polling...")
-    max_retries = 5
-    for attempt in range(max_retries):
-        try:
-            bot.infinity_polling(timeout=60, long_polling_timeout=60)
-            break
-        except telebot.apihelper.ApiTelegramException as e:
-            if "409" in str(e) and attempt < max_retries - 1:
-                wait = (attempt + 1) * 5
-                print(f"⚠️ Конфликт 409, попытка {attempt+1}/{max_retries}. Жду {wait} сек...")
-                force_drop_polling()
-                time.sleep(wait)
-            else:
-                print(f"❌ Критическая ошибка: {e}")
-                raise
-        except Exception as e:
-            print(f"❌ Ошибка polling: {e}")
-            if attempt < max_retries - 1:
-                time.sleep(5)
-            else:
-                raise
+    # Start Flask server
+    print(f"🌐 Flask on port {PORT}")
+    app.run(host="0.0.0.0", port=PORT)
