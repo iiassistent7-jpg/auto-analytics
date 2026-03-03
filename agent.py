@@ -647,8 +647,10 @@ body{{background:#06060c;color:#e8e8f0;font-family:Arial,Helvetica,sans-serif;wi
         f.write(html)
     try:
         subprocess.run([
-            "wkhtmltoimage", "--quality", "90", "--width", "1280",
-            "--enable-local-file-access", html_path, png_path
+            "chromium", "--headless", "--disable-gpu", "--no-sandbox",
+            "--window-size=1280,2000", "--screenshot=" + png_path,
+            "--default-background-color=00000000",
+            "file://" + html_path
         ], check=True, timeout=30, capture_output=True)
     finally:
         try:
