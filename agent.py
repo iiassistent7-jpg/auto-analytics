@@ -329,6 +329,11 @@ def full_analytics(since=None, until=None):
         since = parse_date(since) or (now - timedelta(days=30))
     if isinstance(until, str):
         until = parse_date(until) or now
+    # Make dates timezone-naive for comparison
+    if hasattr(since, 'tzinfo') and since.tzinfo:
+        since = since.replace(tzinfo=None)
+    if hasattr(until, 'tzinfo') and until.tzinfo:
+        until = until.replace(tzinfo=None)
 
     # Read all data
     maya_leads = read_maya_leads(since, until)
