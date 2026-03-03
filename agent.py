@@ -7,6 +7,7 @@ import schedule
 import telebot
 import anthropic
 import gspread
+import requests
 from datetime import datetime, timedelta, timezone
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
@@ -503,7 +504,7 @@ def generate_report(data, report_type="full"):
 # DASHBOARD PNG
 # ============================================================
 def generate_dashboard_png(data):
-    """Generate dashboard PNG using wkhtmltoimage (imgkit)."""
+    """Generate dashboard PNG using chromium headless."""
     import subprocess
 
     leads = data.get("leads", {})
@@ -901,12 +902,59 @@ def handle_voice(message):
     safe_send(MY_CHAT_ID, "🎤 Голосовые пока не поддерживаются. Напиши текстом!")
 
 # ============================================================
-# STARTUP
+# FORCE STOP OTHER POLLING & START
 # ============================================================
+def force_drop_polling():
+    """Call Telegram API directly to kill any existing polling sessions."""
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/deleteWebhook"
+    try:
+        resp = requests.post(url, json={"drop_pending_updates": True}, timeout=10)
+        print(f"deleteWebhook: {resp.status_code} {resp.text}")
+    except Exception as e:
+        print(f"deleteWebhook error: {e}")
+
+    # Also call getUpdates with a short timeout to "steal" the polling lock
+    url2 = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates"
+    try:
+        resp2 = requests.post(url2, json={"offset": -1, "timeout": 0}, timeout=10)
+        print(f"getUpdates reset: {resp2.status_code}")
+    except Exception as e:
+        print(f"getUpdates reset error: {e}")
+
 if __name__ == "__main__":
     print("🚗 АВТОАНАЛИТИК НА ПОСТУ!")
     print(f"📅 {get_israel_now().strftime('%Y-%m-%d %H:%M')}")
+
+    # Step 1: Force kill any existing polling
+    print("🔄 Сбрасываю предыдущие polling-сессии...")
+    force_drop_polling()
+    time.sleep(3)
+    force_drop_polling()
+    time.sleep(2)
+
+    # Step 2: Remove webhook just in case
     bot.delete_webhook(drop_pending_updates=True)
-    time.sleep(1)
-    print("📱 Polling...")
-    bot.infinity_polling(timeout=60, long_polling_timeout=60)
+    time.sleep(2)
+
+    # Step 3: Start polling with retry
+    print("📱 Запускаю polling...")
+    max_retries = 5
+    for attempt in range(max_retries):
+        try:
+            bot.infinity_polling(timeout=60, long_polling_timeout=60)
+            break
+        except telebot.apihelper.ApiTelegramException as e:
+            if "409" in str(e) and attempt < max_retries - 1:
+                wait = (attempt + 1) * 5
+                print(f"⚠️ Конфликт 409, попытка {attempt+1}/{max_retries}. Жду {wait} сек...")
+                force_drop_polling()
+                time.sleep(wait)
+            else:
+                print(f"❌ Критическая ошибка: {e}")
+                raise
+        except Exception as e:
+            print(f"❌ Ошибка polling: {e}")
+            if attempt < max_retries - 1:
+                time.sleep(5)
+            else:
+                raise
