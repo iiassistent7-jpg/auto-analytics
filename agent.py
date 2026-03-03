@@ -21,7 +21,7 @@ ANTHROPIC_KEY = os.environ.get("ANTHROPIC_KEY", "")
 # Google Sheets IDs
 MAYA_LEADS_SHEET = os.environ.get("MAYA_LEADS_SHEET", "1ZM-rN0dlUdeQhgFltodlPW9KIuvtdsIb2QkcjzZtvKI")
 CARCITY_LEADS_SHEET = os.environ.get("CARCITY_LEADS_SHEET", "1Y2X_nDDnyfQiadHO-B07IhaqZPCHVr7XU583_gaNlYM")
-SALES_SHEET = os.environ.get("SALES_SHEET", "12GZ6qg_t9lPlwp0p4dN6-JQ281VGa_nsDzN_NwRD1TE")
+SALES_SHEET = os.environ.get("SALES_SHEET", "12GZ6qg_t9IPlwp0p4dN6-JQ281VGa_nsDzN_NwRD1TE")
 
 # Google Calendar
 CALENDAR_ID = os.environ.get("CALENDAR_ID", "6adb497d70d6f51fb1bfee8d5fda6661b9c61f79d88069ac4b0b843f2f9f4358@group.calendar.google.com")
