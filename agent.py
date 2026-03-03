@@ -19,9 +19,9 @@ MY_CHAT_ID = int(os.environ.get("MY_CHAT_ID", "0"))
 ANTHROPIC_KEY = os.environ.get("ANTHROPIC_KEY", "")
 
 # Google Sheets IDs
-MAYA_LEADS_SHEET = os.environ.get("MAYA_LEADS_SHEET", "1ZM-rN0dlUdeQhgFltodIPW9KluvtdsIb2QkcjzZtvKI")
+MAYA_LEADS_SHEET = os.environ.get("MAYA_LEADS_SHEET", "1ZM-rN0dlUdeQhgFltodlPW9KIuvtdsIb2QkcjzZtvKI")
 CARCITY_LEADS_SHEET = os.environ.get("CARCITY_LEADS_SHEET", "1Y2X_nDDnyfQiadHO-B07IhaqZPCHVr7XU583_gaNlYM")
-SALES_SHEET = os.environ.get("SALES_SHEET", "1iLzumAZSzCOXwsdso7XzAPhM_zKIZ4H4")
+SALES_SHEET = os.environ.get("SALES_SHEET", "12GZ6qg_t9lPlwp0p4dN6-JQ281VGa_nsDzN_NwRD1TE")
 
 # Google Calendar
 CALENDAR_ID = os.environ.get("CALENDAR_ID", "6adb497d70d6f51fb1bfee8d5fda6661b9c61f79d88069ac4b0b843f2f9f4358@group.calendar.google.com")
@@ -327,8 +327,10 @@ def full_analytics(since=None, until=None):
         until = now
     if isinstance(since, str):
         since = parse_date(since) or (now - timedelta(days=30))
-    if isinstance(until, str):
-        until = parse_date(until) or now
+    if hasattr(since, 'tzinfo') and since.tzinfo:
+        since = since.replace(tzinfo=None)
+    if hasattr(until, 'tzinfo') and until.tzinfo:
+        until = until.replace(tzinfo=None)
     # Make dates timezone-naive for comparison
     if hasattr(since, 'tzinfo') and since.tzinfo:
         since = since.replace(tzinfo=None)
