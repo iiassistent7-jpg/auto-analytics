@@ -1,8 +1,8 @@
 [phases.setup]
-nixPkgs = ["chromium"]
+nixPkgs = []
 
 [phases.install]
-cmds = ["pip install -r requirements.txt"]
+cmds = ["pip install -r requirements.txt", "playwright install --with-deps chromium"]
 
 [start]
-cmd = "playwright install chromium && python agent.py"
+cmd = "python agent.py"
