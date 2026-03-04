@@ -381,19 +381,30 @@ def read_fb_ads(since=None, until=None):
                 clicks = int(camp.get("clicks", 0))
 
                 # Extract leads from actions
+                # MayaCars account uses messenger campaigns → messaging_first_reply
+                # CarCity/AutoMotors account uses lead forms → lead/lead_grouped
                 leads = 0
+                messaging_leads = 0
+                form_leads = 0
                 actions = camp.get("actions", [])
                 for action in actions:
-                    if action.get("action_type") in ("lead", "offsite_conversion.fb_pixel_lead", "onsite_conversion.lead_grouped"):
-                        leads += int(action.get("value", 0))
+                    atype = action.get("action_type", "")
+                    aval = int(action.get("value", 0))
+                    if atype == "lead":
+                        form_leads = aval
+                    elif atype == "onsite_conversion.messaging_first_reply":
+                        messaging_leads = aval
 
-                # Extract CPL from cost_per_action_type
-                cpl = 0
-                cost_actions = camp.get("cost_per_action_type", [])
-                for ca in cost_actions:
-                    if ca.get("action_type") in ("lead", "offsite_conversion.fb_pixel_lead", "onsite_conversion.lead_grouped"):
-                        cpl = float(ca.get("value", 0))
-                        break
+                # Choose lead metric based on account
+                if account_id.strip() == "act_727944125775296":
+                    # MayaCars: messenger campaigns
+                    leads = messaging_leads if messaging_leads > 0 else form_leads
+                else:
+                    # CarCity/AutoMotors: lead form campaigns
+                    leads = form_leads if form_leads > 0 else messaging_leads
+
+                # Extract CPL - calculate from spend/leads since cost_per_action may not match
+                cpl = round(spend / leads, 2) if leads > 0 else 0
 
                 if spend == 0 and leads == 0:
                     continue
