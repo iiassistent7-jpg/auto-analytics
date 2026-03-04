@@ -5,6 +5,7 @@ import tempfile
 import telebot
 import anthropic
 import gspread
+import requests
 from flask import Flask, request as flask_request
 from datetime import datetime, timedelta, timezone
 from google.oauth2.service_account import Credentials
@@ -26,6 +27,11 @@ SALES_SHEET = os.environ.get("SALES_SHEET", "12GZ6qg_t9lPlwp0p4dN6-JQ281VGa_nsDz
 
 # Google Calendar
 CALENDAR_ID = os.environ.get("CALENDAR_ID", "6adb497d70d6f51fb1bfee8d5fda6661b9c61f79d88069ac4b0b843f2f9f4358@group.calendar.google.com")
+
+# Facebook Ads
+FB_ACCESS_TOKEN = os.environ.get("FB_ACCESS_TOKEN", "")
+FB_AD_ACCOUNTS = os.environ.get("FB_AD_ACCOUNTS", "").split(",")
+FB_GRAPH_URL = "https://graph.facebook.com/v25.0"
 
 ISRAEL_UTC_OFFSET = 2
 
@@ -305,6 +311,148 @@ def read_calendar_meetings(since=None, until=None):
         return []
 
 # ============================================================
+# DATA: FACEBOOK ADS
+# ============================================================
+def read_fb_ads(since=None, until=None):
+    """Read campaign data from Facebook Ads API for all ad accounts."""
+    if not FB_ACCESS_TOKEN or not FB_AD_ACCOUNTS or FB_AD_ACCOUNTS == [""]:
+        print("FB Ads: no token or accounts configured")
+        return {"campaigns": [], "totals": {}}
+
+    now = get_israel_now()
+    if not since:
+        since = now - timedelta(days=30)
+    if not until:
+        until = now
+    since_str = since.strftime("%Y-%m-%d")
+    until_str = until.strftime("%Y-%m-%d")
+
+    all_campaigns = []
+    total_spend = 0
+    total_impressions = 0
+    total_clicks = 0
+    total_leads = 0
+
+    for account_id in FB_AD_ACCOUNTS:
+        account_id = account_id.strip()
+        if not account_id:
+            continue
+        try:
+            # Get campaign-level insights
+            url = f"{FB_GRAPH_URL}/{account_id}/insights"
+            params = {
+                "access_token": FB_ACCESS_TOKEN,
+                "fields": "campaign_name,campaign_id,spend,impressions,clicks,actions,cost_per_action_type",
+                "time_range": json.dumps({"since": since_str, "until": until_str}),
+                "level": "campaign",
+                "limit": 500,
+                "filtering": json.dumps([{"field": "campaign.delivery_info", "operator": "IN", "value": ["active", "inactive", "completed"]}])
+            }
+            resp = requests.get(url, params=params, timeout=30)
+            data = resp.json()
+
+            if "error" in data:
+                print(f"FB API error for {account_id}: {data['error'].get('message', '')}")
+                continue
+
+            campaigns = data.get("data", [])
+            # Handle pagination
+            while data.get("paging", {}).get("next"):
+                resp = requests.get(data["paging"]["next"], timeout=30)
+                data = resp.json()
+                campaigns.extend(data.get("data", []))
+
+            for camp in campaigns:
+                spend = float(camp.get("spend", 0))
+                impressions = int(camp.get("impressions", 0))
+                clicks = int(camp.get("clicks", 0))
+
+                # Extract leads from actions
+                leads = 0
+                actions = camp.get("actions", [])
+                for action in actions:
+                    if action.get("action_type") in ("lead", "offsite_conversion.fb_pixel_lead", "onsite_conversion.lead_grouped"):
+                        leads += int(action.get("value", 0))
+
+                # Extract CPL from cost_per_action_type
+                cpl = 0
+                cost_actions = camp.get("cost_per_action_type", [])
+                for ca in cost_actions:
+                    if ca.get("action_type") in ("lead", "offsite_conversion.fb_pixel_lead", "onsite_conversion.lead_grouped"):
+                        cpl = float(ca.get("value", 0))
+                        break
+
+                if spend == 0 and leads == 0:
+                    continue
+
+                campaign_name = camp.get("campaign_name", "Unknown")
+
+                # Detect source from campaign name
+                name_lower = campaign_name.lower()
+                if "carcity" in name_lower or "car city" in name_lower:
+                    source = "CarCity"
+                elif "automotors" in name_lower or "auto motors" in name_lower or "auto motor" in name_lower:
+                    source = "AutoMotors"
+                elif "maya" in name_lower:
+                    source = "MayaCars"
+                elif "tik" in name_lower:
+                    source = "TikTok"
+                else:
+                    source = "Other"
+
+                all_campaigns.append({
+                    "name": campaign_name,
+                    "account_id": account_id,
+                    "source": source,
+                    "spend": round(spend, 2),
+                    "impressions": impressions,
+                    "clicks": clicks,
+                    "leads": leads,
+                    "cpl": round(cpl, 2) if cpl else (round(spend / leads, 2) if leads > 0 else 0),
+                    "ctr": round(clicks / impressions * 100, 2) if impressions > 0 else 0
+                })
+
+                total_spend += spend
+                total_impressions += impressions
+                total_clicks += clicks
+                total_leads += leads
+
+        except Exception as e:
+            print(f"FB Ads error for {account_id}: {e}")
+            continue
+
+    # Aggregate by source
+    by_source = {}
+    for camp in all_campaigns:
+        src = camp["source"]
+        if src not in by_source:
+            by_source[src] = {"spend": 0, "leads": 0, "clicks": 0, "impressions": 0, "campaigns": []}
+        by_source[src]["spend"] += camp["spend"]
+        by_source[src]["leads"] += camp["leads"]
+        by_source[src]["clicks"] += camp["clicks"]
+        by_source[src]["impressions"] += camp["impressions"]
+        by_source[src]["campaigns"].append(camp["name"])
+
+    for src in by_source:
+        s = by_source[src]
+        s["cpl"] = round(s["spend"] / s["leads"], 2) if s["leads"] > 0 else 0
+        s["ctr"] = round(s["clicks"] / s["impressions"] * 100, 2) if s["impressions"] > 0 else 0
+        s["spend"] = round(s["spend"], 2)
+
+    return {
+        "campaigns": all_campaigns,
+        "by_source": by_source,
+        "totals": {
+            "spend": round(total_spend, 2),
+            "impressions": total_impressions,
+            "clicks": total_clicks,
+            "leads": total_leads,
+            "cpl": round(total_spend / total_leads, 2) if total_leads > 0 else 0,
+            "ctr": round(total_clicks / total_impressions * 100, 2) if total_impressions > 0 else 0
+        }
+    }
+
+# ============================================================
 # ANALYTICS
 # ============================================================
 def compute_analytics(since, until):
@@ -314,6 +462,7 @@ def compute_analytics(since, until):
     all_leads = maya_leads + cc_leads
     sales = read_sales()
     meetings = read_calendar_meetings(since, until)
+    fb_ads = read_fb_ads(since, until)
 
     leads_by_source = {}
     for lead in all_leads:
@@ -368,7 +517,8 @@ def compute_analytics(since, until):
             "lead_form_count": lead_form_count, "message_count": message_count,
             "lead_form_pct": round(lead_form_count / total_leads * 100, 1) if total_leads > 0 else 0,
             "message_pct": round(message_count / total_leads * 100, 1) if total_leads > 0 else 0
-        }
+        },
+        "fb_ads": fb_ads
     }
 
 def full_analytics(since=None, until=None):
@@ -488,6 +638,7 @@ def generate_dashboard_png(data):
     funnel = data.get("funnel", {})
     comparison = data.get("comparison", {})
     period = data.get("period", {})
+    fb_ads = data.get("fb_ads", {})
     prev = data.get("prev") or {}
 
     prev_leads = prev.get("leads", {}) if prev else {}
@@ -576,6 +727,56 @@ def generate_dashboard_png(data):
     lf_pct = comparison.get("lead_form_pct", 0)
     msg_pct = comparison.get("message_pct", 0)
 
+    # FB Ads section
+    fb_totals = fb_ads.get("totals", {})
+    fb_by_source = fb_ads.get("by_source", {})
+    prev_fb = prev.get("fb_ads", {}) if prev else {}
+    prev_fb_totals = prev_fb.get("totals", {}) if prev_fb else {}
+    prev_fb_by_source = prev_fb.get("by_source", {}) if prev_fb else {}
+
+    fb_spend = fb_totals.get("spend", 0)
+    fb_leads_total = fb_totals.get("leads", 0)
+    fb_cpl = fb_totals.get("cpl", 0)
+    fb_ctr = fb_totals.get("ctr", 0)
+
+    p_fb_spend = prev_fb_totals.get("spend", 0)
+    p_fb_leads = prev_fb_totals.get("leads", 0)
+    p_fb_cpl = prev_fb_totals.get("cpl", 0)
+
+    d_fb_spend = delta_html(fb_spend, p_fb_spend, invert=True)
+    d_fb_leads = delta_html(fb_leads_total, p_fb_leads)
+    d_fb_cpl = delta_html(fb_cpl, p_fb_cpl, invert=True)
+
+    # FB campaign cards by source
+    fb_source_cards = ""
+    for src in ["CarCity", "AutoMotors", "MayaCars", "Other"]:
+        s = fb_by_source.get(src, {})
+        if not s or (s.get("spend", 0) == 0 and s.get("leads", 0) == 0):
+            continue
+        col = colors.get(src, "#6b7280")
+        ps = prev_fb_by_source.get(src, {})
+        d_s_leads = delta_html(s.get("leads", 0), ps.get("leads", 0))
+        d_s_cpl = delta_html(s.get("cpl", 0), ps.get("cpl", 0), invert=True)
+        fb_source_cards += f'''<div class="src-card">
+<div class="src-name" style="color:{col}">{src}</div>
+<div class="src-row"><span class="src-l">Расход</span><span class="src-v">${s.get("spend", 0)}</span></div>
+<div class="src-row"><span class="src-l">Лиды</span><span class="src-v">{s.get("leads", 0)} {d_s_leads}</span></div>
+<div class="src-row"><span class="src-l">CPL</span><span class="src-v" style="color:{col}">${s.get("cpl", 0)} {d_s_cpl}</span></div>
+<div class="src-row"><span class="src-l">CTR</span><span class="src-v">{s.get("ctr", 0)}%</span></div>
+</div>'''
+
+    # Top campaigns table
+    top_campaigns = sorted(fb_ads.get("campaigns", []), key=lambda x: x.get("spend", 0), reverse=True)[:6]
+    campaigns_rows = ""
+    for c in top_campaigns:
+        cname = c.get("name", "")[:45]
+        campaigns_rows += f'''<div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid rgba(255,255,255,.04);font-size:14px">
+<span style="color:#e0e0f0;flex:2">{cname}</span>
+<span style="color:#a0a0b8;width:80px;text-align:right">${c.get("spend", 0)}</span>
+<span style="color:#a0a0b8;width:60px;text-align:right">{c.get("leads", 0)}</span>
+<span style="color:#a0a0b8;width:80px;text-align:right">${c.get("cpl", 0)}</span>
+</div>'''
+
     html = f'''<!DOCTYPE html><html><head><meta charset="UTF-8"><style>
 *{{margin:0;padding:0;box-sizing:border-box}}
 body{{background:#06060c;color:#e8e8f0;font-family:Arial,Helvetica,sans-serif;width:1280px;overflow:hidden}}
@@ -632,6 +833,24 @@ body{{background:#06060c;color:#e8e8f0;font-family:Arial,Helvetica,sans-serif;wi
 <div class="sec">Источники</div>
 <div class="src-grid">{source_cards}</div>
 
+<div class="sec">Meta Ads</div>
+<div class="g4">
+<div class="card"><div class="cl">Расход</div><div class="cv" style="color:#ef4444">${fb_spend}</div><div class="cd">{d_fb_spend}</div></div>
+<div class="card"><div class="cl">Лиды (FB)</div><div class="cv" style="color:#3b82f6">{fb_leads_total}</div><div class="cd">{d_fb_leads}</div></div>
+<div class="card"><div class="cl">CPL</div><div class="cv" style="color:#f0c040">${fb_cpl}</div><div class="cd">{d_fb_cpl}</div></div>
+<div class="card"><div class="cl">CTR</div><div class="cv" style="color:#a855f7">{fb_ctr}%</div></div>
+</div>
+<div class="src-grid">{fb_source_cards}</div>
+<div class="fcard">
+<div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid rgba(255,255,255,.08);font-size:14px;font-weight:700">
+<span style="color:#e0e0f0;flex:2">КАМПАНИЯ</span>
+<span style="color:#a0a0b8;width:80px;text-align:right">РАСХОД</span>
+<span style="color:#a0a0b8;width:60px;text-align:right">ЛИДЫ</span>
+<span style="color:#a0a0b8;width:80px;text-align:right">CPL</span>
+</div>
+{campaigns_rows}
+</div>
+
 <div class="sec">Лид-форма vs Переписка</div>
 <div class="fcard"><div class="comp-bar">
 <div class="comp-seg" style="width:{max(lf_pct,5)}%;background:#3b82f6">Формы: {lf_count} ({lf_pct}%)</div>
@@ -655,7 +874,7 @@ body{{background:#06060c;color:#e8e8f0;font-family:Arial,Helvetica,sans-serif;wi
     try:
         subprocess.run([
             "chromium", "--headless", "--disable-gpu", "--no-sandbox",
-            "--window-size=1280,1800", "--screenshot=" + png_path,
+            "--window-size=1280,2400", "--screenshot=" + png_path,
             "--default-background-color=00000000",
             "file://" + html_path
         ], check=True, timeout=30, capture_output=True)
