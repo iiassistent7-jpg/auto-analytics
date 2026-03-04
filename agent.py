@@ -478,48 +478,54 @@ def read_fb_ads(since=None, until=None):
 # ANALYTICS
 # ============================================================
 def compute_analytics(since, until):
-    """Core analytics computation for a given period."""
-    maya_leads = read_maya_leads(since, until)
-    cc_leads = read_carcity_leads(since, until)
-    all_leads = maya_leads + cc_leads
+    """Core analytics computation. Leads from FB Ads, meetings/sales from Sheets."""
     sales = read_sales()
     meetings = read_calendar_meetings(since, until)
     fb_ads = read_fb_ads(since, until)
 
-    leads_by_source = {}
-    for lead in all_leads:
-        src = lead["source"]
-        if src not in leads_by_source:
-            leads_by_source[src] = {"total": 0, "lead_form": 0, "message": 0}
-        leads_by_source[src]["total"] += 1
-        leads_by_source[src][lead["type"]] += 1
+    # Leads from FB Ads (primary source)
+    fb_totals = fb_ads.get("totals", {})
+    fb_by_source = fb_ads.get("by_source", {})
+    total_leads = fb_totals.get("leads", 0)
 
+    # Leads by source from FB
+    leads_by_source = {}
+    for src, src_data in fb_by_source.items():
+        leads_by_source[src] = {"total": src_data.get("leads", 0), "spend": src_data.get("spend", 0), "cpl": src_data.get("cpl", 0)}
+
+    # Sales
     sales_by_source = {}
     for sale in sales:
         src = sale["source"]
         sales_by_source[src] = sales_by_source.get(src, 0) + 1
+    total_sales = len(sales)
 
+    # Meetings
     total_meetings = len(meetings)
     completed_meetings = sum(1 for m in meetings if m["status"] == "completed")
     no_show_meetings = sum(1 for m in meetings if m["status"] == "no_show")
     no_show_rate = round(no_show_meetings / total_meetings * 100, 1) if total_meetings > 0 else 0
 
-    total_leads = len(all_leads)
-    total_sales = len(sales)
-    lead_form_count = sum(1 for l in all_leads if l["type"] == "lead_form")
-    message_count = sum(1 for l in all_leads if l["type"] == "message")
-
+    # Funnel
     lead_to_meeting = round(total_meetings / total_leads * 100, 1) if total_leads > 0 else 0
     meeting_to_sale = round(total_sales / completed_meetings * 100, 1) if completed_meetings > 0 else 0
     lead_to_sale = round(total_sales / total_leads * 100, 1) if total_leads > 0 else 0
 
+    # Campaigns by account
+    by_account = {}
+    for camp in fb_ads.get("campaigns", []):
+        acc = camp.get("account_id", "")
+        if acc not in by_account:
+            by_account[acc] = {"campaigns": [], "spend": 0, "leads": 0}
+        by_account[acc]["campaigns"].append(camp)
+        by_account[acc]["spend"] += camp.get("spend", 0)
+        by_account[acc]["leads"] += camp.get("leads", 0)
+
     return {
         "period": {"since": since.strftime("%Y-%m-%d"), "until": until.strftime("%Y-%m-%d")},
         "leads": {
-            "total": total_leads, "maya_cars": len(maya_leads),
-            "car_city_auto_motors": len(cc_leads),
+            "total": total_leads,
             "by_source": leads_by_source,
-            "lead_form": lead_form_count, "message": message_count
         },
         "meetings": {
             "total": total_meetings, "completed": completed_meetings,
@@ -535,12 +541,8 @@ def compute_analytics(since, until):
             "meeting_to_sale": meeting_to_sale,
             "lead_to_sale": lead_to_sale, "no_show_rate": no_show_rate
         },
-        "comparison": {
-            "lead_form_count": lead_form_count, "message_count": message_count,
-            "lead_form_pct": round(lead_form_count / total_leads * 100, 1) if total_leads > 0 else 0,
-            "message_pct": round(message_count / total_leads * 100, 1) if total_leads > 0 else 0
-        },
-        "fb_ads": fb_ads
+        "fb_ads": fb_ads,
+        "by_account": by_account
     }
 
 def full_analytics(since=None, until=None):
@@ -658,15 +660,18 @@ def generate_dashboard_png(data):
     meetings = data.get("meetings", {})
     sales = data.get("sales", {})
     funnel = data.get("funnel", {})
-    comparison = data.get("comparison", {})
     period = data.get("period", {})
     fb_ads = data.get("fb_ads", {})
+    by_account = data.get("by_account", {})
     prev = data.get("prev") or {}
 
     prev_leads = prev.get("leads", {}) if prev else {}
     prev_meetings = prev.get("meetings", {}) if prev else {}
     prev_sales = prev.get("sales", {}) if prev else {}
     prev_funnel = prev.get("funnel", {}) if prev else {}
+    prev_fb = prev.get("fb_ads", {}) if prev else {}
+    prev_fb_totals = prev_fb.get("totals", {}) if prev_fb else {}
+    prev_fb_by_source = prev_fb.get("by_source", {}) if prev_fb else {}
 
     total_leads = leads.get("total", 0)
     total_meetings = meetings.get("total", 0)
@@ -676,56 +681,59 @@ def generate_dashboard_png(data):
     total_sales = sales.get("total", 0)
     lead_to_sale = funnel.get("lead_to_sale", 0)
 
-    # Previous period values
+    fb_totals = fb_ads.get("totals", {})
+    fb_by_source = fb_ads.get("by_source", {})
+    fb_spend = fb_totals.get("spend", 0)
+    fb_cpl = fb_totals.get("cpl", 0)
+    fb_ctr = fb_totals.get("ctr", 0)
+
     p_leads = prev_leads.get("total", 0)
     p_meetings = prev_meetings.get("total", 0)
     p_sales = prev_sales.get("total", 0)
     p_lead_to_sale = prev_funnel.get("lead_to_sale", 0)
     p_no_show_rate = prev_funnel.get("no_show_rate", 0)
-
-    by_source = leads.get("by_source", {})
-    sales_by_src = sales.get("by_source", {})
-    prev_by_source = prev_leads.get("by_source", {}) if prev_leads else {}
+    p_fb_spend = prev_fb_totals.get("spend", 0)
+    p_fb_cpl = prev_fb_totals.get("cpl", 0)
 
     period_label = f'{period.get("since", "")} — {period.get("until", "")}'
     now = get_israel_now()
     date_str = now.strftime("%d.%m.%Y %H:%M")
 
-    # Delta badges for top cards
     d_leads = delta_html(total_leads, p_leads)
     d_meetings = delta_html(total_meetings, p_meetings)
     d_sales = delta_html(total_sales, p_sales)
     d_conv = delta_html(lead_to_sale, p_lead_to_sale)
+    d_fb_spend = delta_html(fb_spend, p_fb_spend, invert=True)
+    d_fb_cpl = delta_html(fb_cpl, p_fb_cpl, invert=True)
 
-    # Source cards with deltas
-    source_cards = ""
-    sources_list = ["MayaCars", "CarCity", "AutoMotors", "TikTok", "Marketplace", "Organic"]
     colors = {"MayaCars": "#f0c040", "CarCity": "#3b82f6", "AutoMotors": "#a855f7",
-              "TikTok": "#ef4444", "Marketplace": "#22c55e", "Organic": "#6b7280"}
-    for src in sources_list:
-        src_data = by_source.get(src, {})
-        cnt = src_data.get("total", 0) if isinstance(src_data, dict) else 0
-        s_cnt = sales_by_src.get(src, 0)
-        conv = round(s_cnt / cnt * 100, 1) if cnt > 0 else 0
+              "CarCity/AutoMotors": "#6b7280", "TikTok": "#ef4444", "Marketplace": "#22c55e", "Organic": "#6b7280"}
+
+    # Source cards from FB Ads data
+    source_cards = ""
+    for src in ["MayaCars", "CarCity", "AutoMotors", "CarCity/AutoMotors"]:
+        s = fb_by_source.get(src, {})
+        if not s or (s.get("spend", 0) == 0 and s.get("leads", 0) == 0):
+            continue
         col = colors.get(src, "#6b7280")
-        # Previous
-        prev_src = prev_by_source.get(src, {})
-        p_cnt = prev_src.get("total", 0) if isinstance(prev_src, dict) else 0
-        d_src = delta_html(cnt, p_cnt)
-        if cnt > 0 or s_cnt > 0:
-            source_cards += f'''<div class="src-card">
+        s_cnt = sales.get("by_source", {}).get(src, 0)
+        ps = prev_fb_by_source.get(src, {})
+        d_s_leads = delta_html(s.get("leads", 0), ps.get("leads", 0))
+        d_s_cpl = delta_html(s.get("cpl", 0), ps.get("cpl", 0), invert=True)
+        source_cards += f'''<div class="src-card">
 <div class="src-name" style="color:{col}">{src}</div>
-<div class="src-row"><span class="src-l">Лиды</span><span class="src-v">{cnt} {d_src}</span></div>
+<div class="src-row"><span class="src-l">Расход</span><span class="src-v">₪{s.get("spend", 0)}</span></div>
+<div class="src-row"><span class="src-l">Лиды</span><span class="src-v">{s.get("leads", 0)} {d_s_leads}</span></div>
+<div class="src-row"><span class="src-l">CPL</span><span class="src-v" style="color:{col}">₪{s.get("cpl", 0)} {d_s_cpl}</span></div>
+<div class="src-row"><span class="src-l">CTR</span><span class="src-v">{s.get("ctr", 0)}%</span></div>
 <div class="src-row"><span class="src-l">Продажи</span><span class="src-v">{s_cnt}</span></div>
-<div class="src-row"><span class="src-l">Конверсия</span><span class="src-v" style="color:{col}">{conv}%</span></div>
 </div>'''
 
-    # Funnel pyramid (centered trapezoids narrowing down)
+    # Funnel pyramid
     funnel_steps = []
     if total_leads > 0:
         funnel_steps.append(("Лиды", total_leads, 100, "#3b82f6"))
     if total_meetings > 0:
-        pct_m = round(total_meetings / max(total_leads, 1) * 100, 1)
         funnel_steps.append(("Встречи", total_meetings, max(60, 75), "#a855f7"))
     if completed > 0:
         funnel_steps.append(("Состоялись", completed, max(40, 55), "#22c55e"))
@@ -744,59 +752,38 @@ def generate_dashboard_png(data):
 <span style="position:absolute;left:-70px;font-size:17px;font-weight:700;color:#22c55e;width:60px;text-align:right">{pct_label}</span>
 </div></div>'''
 
-    lf_count = comparison.get("lead_form_count", 0)
-    msg_count = comparison.get("message_count", 0)
-    lf_pct = comparison.get("lead_form_pct", 0)
-    msg_pct = comparison.get("message_pct", 0)
-
-    # FB Ads section
-    fb_totals = fb_ads.get("totals", {})
-    fb_by_source = fb_ads.get("by_source", {})
-    prev_fb = prev.get("fb_ads", {}) if prev else {}
-    prev_fb_totals = prev_fb.get("totals", {}) if prev_fb else {}
-    prev_fb_by_source = prev_fb.get("by_source", {}) if prev_fb else {}
-
-    fb_spend = fb_totals.get("spend", 0)
-    fb_leads_total = fb_totals.get("leads", 0)
-    fb_cpl = fb_totals.get("cpl", 0)
-    fb_ctr = fb_totals.get("ctr", 0)
-
-    p_fb_spend = prev_fb_totals.get("spend", 0)
-    p_fb_leads = prev_fb_totals.get("leads", 0)
-    p_fb_cpl = prev_fb_totals.get("cpl", 0)
-
-    d_fb_spend = delta_html(fb_spend, p_fb_spend, invert=True)
-    d_fb_leads = delta_html(fb_leads_total, p_fb_leads)
-    d_fb_cpl = delta_html(fb_cpl, p_fb_cpl, invert=True)
-
-    # FB campaign cards by source
-    fb_source_cards = ""
-    for src in ["CarCity", "AutoMotors", "MayaCars", "CarCity/AutoMotors", "Marketplace"]:
-        s = fb_by_source.get(src, {})
-        if not s or (s.get("spend", 0) == 0 and s.get("leads", 0) == 0):
+    # Campaigns by account
+    account_names = {"act_727944125775296": "MayaCars", "act_641215216627017": "CarCity / AutoMotors"}
+    account_colors = {"act_727944125775296": "#f0c040", "act_641215216627017": "#3b82f6"}
+    accounts_html = ""
+    for acc_id, acc_data in by_account.items():
+        acc_name = account_names.get(acc_id.strip(), acc_id)
+        acc_color = account_colors.get(acc_id.strip(), "#a0a0b8")
+        camps = sorted(acc_data.get("campaigns", []), key=lambda x: x.get("leads", 0), reverse=True)[:8]
+        if not camps:
             continue
-        col = colors.get(src, "#6b7280")
-        ps = prev_fb_by_source.get(src, {})
-        d_s_leads = delta_html(s.get("leads", 0), ps.get("leads", 0))
-        d_s_cpl = delta_html(s.get("cpl", 0), ps.get("cpl", 0), invert=True)
-        fb_source_cards += f'''<div class="src-card">
-<div class="src-name" style="color:{col}">{src}</div>
-<div class="src-row"><span class="src-l">Расход</span><span class="src-v">₪{s.get("spend", 0)}</span></div>
-<div class="src-row"><span class="src-l">Лиды</span><span class="src-v">{s.get("leads", 0)} {d_s_leads}</span></div>
-<div class="src-row"><span class="src-l">CPL</span><span class="src-v" style="color:{col}">₪{s.get("cpl", 0)} {d_s_cpl}</span></div>
-<div class="src-row"><span class="src-l">CTR</span><span class="src-v">{s.get("ctr", 0)}%</span></div>
-</div>'''
-
-    # Top campaigns table
-    top_campaigns = sorted(fb_ads.get("campaigns", []), key=lambda x: x.get("spend", 0), reverse=True)[:6]
-    campaigns_rows = ""
-    for c in top_campaigns:
-        cname = c.get("name", "")[:45]
-        campaigns_rows += f'''<div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid rgba(255,255,255,.04);font-size:14px">
+        rows = ""
+        for c in camps:
+            cname = c.get("name", "")[:40]
+            rows += f'''<div style="display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid rgba(255,255,255,.04);font-size:13px">
 <span style="color:#e0e0f0;flex:2">{cname}</span>
-<span style="color:#a0a0b8;width:80px;text-align:right">₪{c.get("spend", 0)}</span>
-<span style="color:#a0a0b8;width:60px;text-align:right">{c.get("leads", 0)}</span>
-<span style="color:#a0a0b8;width:80px;text-align:right">₪{c.get("cpl", 0)}</span>
+<span style="color:#a0a0b8;width:75px;text-align:right">₪{c.get("spend", 0)}</span>
+<span style="color:#a0a0b8;width:50px;text-align:right">{c.get("leads", 0)}</span>
+<span style="color:#a0a0b8;width:70px;text-align:right">₪{c.get("cpl", 0)}</span>
+<span style="color:#a0a0b8;width:55px;text-align:right">{c.get("ctr", 0)}%</span>
+</div>'''
+        accounts_html += f'''<div class="fcard">
+<div style="font-size:20px;font-weight:800;color:{acc_color};margin-bottom:12px;text-align:center">{acc_name}</div>
+<div style="display:flex;justify-content:space-between;padding:6px 0;margin-bottom:4px;font-size:13px">
+<span style="color:#6b7280;flex:2">Расход: ₪{round(acc_data.get("spend", 0), 2)} · Лиды: {acc_data.get("leads", 0)}</span></div>
+<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid rgba(255,255,255,.08);font-size:12px;font-weight:700">
+<span style="color:#a0a0b8;flex:2">КАМПАНИЯ</span>
+<span style="color:#a0a0b8;width:75px;text-align:right">РАСХОД</span>
+<span style="color:#a0a0b8;width:50px;text-align:right">ЛИДЫ</span>
+<span style="color:#a0a0b8;width:70px;text-align:right">CPL</span>
+<span style="color:#a0a0b8;width:55px;text-align:right">CTR</span>
+</div>
+{rows}
 </div>'''
 
     html = f'''<!DOCTYPE html><html><head><meta charset="UTF-8"><style>
@@ -816,16 +803,14 @@ body{{background:#06060c;color:#e8e8f0;font-family:Arial,Helvetica,sans-serif;wi
 .cl{{font-size:16px;color:#a0a0b8;font-weight:700;text-transform:uppercase;letter-spacing:2px;margin-bottom:8px}}
 .cv{{font-size:44px;font-weight:800;line-height:1}}
 .cd{{margin-top:6px}}
-.fcard{{background:rgba(18,18,28,.85);border:1px solid rgba(255,255,255,.08);border-radius:18px;padding:28px 24px;margin-bottom:14px}}
+.fcard{{background:rgba(18,18,28,.85);border:1px solid rgba(255,255,255,.08);border-radius:18px;padding:24px;margin-bottom:14px}}
 .fn{{max-width:800px;margin:0 auto;padding:0 100px}}
 .src-grid{{display:flex;flex-wrap:wrap;gap:14px;margin-bottom:14px}}
-.src-card{{flex:1;min-width:180px;background:rgba(18,18,28,.85);border:1px solid rgba(255,255,255,.08);border-radius:18px;padding:20px}}
+.src-card{{flex:1;min-width:200px;background:rgba(18,18,28,.85);border:1px solid rgba(255,255,255,.08);border-radius:18px;padding:20px}}
 .src-name{{font-size:20px;font-weight:800;margin-bottom:12px;text-align:center}}
 .src-row{{display:flex;justify-content:space-between;align-items:center;padding:5px 0;border-bottom:1px solid rgba(255,255,255,.04)}}
 .src-l{{font-size:14px;color:#a0a0b8}}
 .src-v{{font-size:16px;font-weight:700}}
-.comp-bar{{display:flex;height:50px;border-radius:14px;overflow:hidden;margin:12px 0}}
-.comp-seg{{display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:700;color:#fff}}
 .pill-grid{{display:flex;gap:14px}}
 .pill{{flex:1;background:rgba(18,18,28,.85);border:1px solid rgba(255,255,255,.08);border-radius:14px;padding:18px;text-align:center}}
 .pill-l{{font-size:16px;color:#e0e0f0;font-weight:700;text-transform:uppercase;letter-spacing:2px;margin-bottom:8px}}
@@ -852,31 +837,19 @@ body{{background:#06060c;color:#e8e8f0;font-family:Arial,Helvetica,sans-serif;wi
 <span style="color:#ef4444">Недошедшие: {no_show_rate}% {delta_html(no_show_rate, p_no_show_rate, invert=True)}</span>
 </div></div>
 
-<div class="sec">Источники</div>
-<div class="src-grid">{source_cards}</div>
-
-<div class="sec">Meta Ads</div>
+<div class="sec">Meta Ads · Общее</div>
 <div class="g4">
 <div class="card"><div class="cl">Расход</div><div class="cv" style="color:#ef4444">₪{fb_spend}</div><div class="cd">{d_fb_spend}</div></div>
-<div class="card"><div class="cl">Лиды (FB)</div><div class="cv" style="color:#3b82f6">{fb_leads_total}</div><div class="cd">{d_fb_leads}</div></div>
+<div class="card"><div class="cl">Лиды</div><div class="cv" style="color:#3b82f6">{total_leads}</div><div class="cd">{d_leads}</div></div>
 <div class="card"><div class="cl">CPL</div><div class="cv" style="color:#f0c040">₪{fb_cpl}</div><div class="cd">{d_fb_cpl}</div></div>
 <div class="card"><div class="cl">CTR</div><div class="cv" style="color:#a855f7">{fb_ctr}%</div></div>
 </div>
-<div class="src-grid">{fb_source_cards}</div>
-<div class="fcard">
-<div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid rgba(255,255,255,.08);font-size:14px;font-weight:700">
-<span style="color:#e0e0f0;flex:2">КАМПАНИЯ</span>
-<span style="color:#a0a0b8;width:80px;text-align:right">РАСХОД</span>
-<span style="color:#a0a0b8;width:60px;text-align:right">ЛИДЫ</span>
-<span style="color:#a0a0b8;width:80px;text-align:right">CPL</span>
-</div>
-{campaigns_rows}
-</div>
 
-<div class="sec">Лид-форма vs Переписка</div>
-<div class="fcard"><div class="comp-bar">
-<div class="comp-seg" style="width:{max(lf_pct,5)}%;background:#3b82f6">Формы: {lf_count} ({lf_pct}%)</div>
-<div class="comp-seg" style="width:{max(msg_pct,5)}%;background:#a855f7">Переписка: {msg_count} ({msg_pct}%)</div></div></div>
+<div class="sec">Источники</div>
+<div class="src-grid">{source_cards}</div>
+
+<div class="sec">Кампании по кабинетам</div>
+{accounts_html}
 
 <div class="sec">Ключевые показатели</div>
 <div class="pill-grid">
