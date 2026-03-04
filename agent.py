@@ -387,18 +387,27 @@ def read_fb_ads(since=None, until=None):
 
                 campaign_name = camp.get("campaign_name", "Unknown")
 
-                # Detect source from campaign name
-                name_lower = campaign_name.lower()
-                if "carcity" in name_lower or "car city" in name_lower:
-                    source = "CarCity"
-                elif "automotors" in name_lower or "auto motors" in name_lower or "auto motor" in name_lower:
-                    source = "AutoMotors"
-                elif "maya" in name_lower:
+                # Detect source: first by account, then by campaign name
+                if account_id.strip() == "act_727944125775296":
+                    # MayaCars account — all campaigns are MayaCars
                     source = "MayaCars"
-                elif "tik" in name_lower:
-                    source = "TikTok"
                 else:
-                    source = "Other"
+                    # Анастасия Эрман account — detect by campaign name
+                    name_lower = campaign_name.lower()
+                    if "carcity" in name_lower or "car city" in name_lower or "car_city" in name_lower:
+                        source = "CarCity"
+                    elif "automotors" in name_lower or "auto motors" in name_lower or "auto motor" in name_lower:
+                        source = "AutoMotors"
+                    elif "marketplace" in name_lower:
+                        source = "Marketplace"
+                    else:
+                        # Default for Анастасия account: check for patterns
+                        if "car" in name_lower and "auto" not in name_lower:
+                            source = "CarCity"
+                        elif "auto" in name_lower:
+                            source = "AutoMotors"
+                        else:
+                            source = "CarCity/AutoMotors"
 
                 all_campaigns.append({
                     "name": campaign_name,
@@ -749,7 +758,7 @@ def generate_dashboard_png(data):
 
     # FB campaign cards by source
     fb_source_cards = ""
-    for src in ["CarCity", "AutoMotors", "MayaCars", "Other"]:
+    for src in ["CarCity", "AutoMotors", "MayaCars", "CarCity/AutoMotors", "Marketplace"]:
         s = fb_by_source.get(src, {})
         if not s or (s.get("spend", 0) == 0 and s.get("leads", 0) == 0):
             continue
@@ -759,9 +768,9 @@ def generate_dashboard_png(data):
         d_s_cpl = delta_html(s.get("cpl", 0), ps.get("cpl", 0), invert=True)
         fb_source_cards += f'''<div class="src-card">
 <div class="src-name" style="color:{col}">{src}</div>
-<div class="src-row"><span class="src-l">Расход</span><span class="src-v">${s.get("spend", 0)}</span></div>
+<div class="src-row"><span class="src-l">Расход</span><span class="src-v">₪{s.get("spend", 0)}</span></div>
 <div class="src-row"><span class="src-l">Лиды</span><span class="src-v">{s.get("leads", 0)} {d_s_leads}</span></div>
-<div class="src-row"><span class="src-l">CPL</span><span class="src-v" style="color:{col}">${s.get("cpl", 0)} {d_s_cpl}</span></div>
+<div class="src-row"><span class="src-l">CPL</span><span class="src-v" style="color:{col}">₪{s.get("cpl", 0)} {d_s_cpl}</span></div>
 <div class="src-row"><span class="src-l">CTR</span><span class="src-v">{s.get("ctr", 0)}%</span></div>
 </div>'''
 
@@ -772,9 +781,9 @@ def generate_dashboard_png(data):
         cname = c.get("name", "")[:45]
         campaigns_rows += f'''<div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid rgba(255,255,255,.04);font-size:14px">
 <span style="color:#e0e0f0;flex:2">{cname}</span>
-<span style="color:#a0a0b8;width:80px;text-align:right">${c.get("spend", 0)}</span>
+<span style="color:#a0a0b8;width:80px;text-align:right">₪{c.get("spend", 0)}</span>
 <span style="color:#a0a0b8;width:60px;text-align:right">{c.get("leads", 0)}</span>
-<span style="color:#a0a0b8;width:80px;text-align:right">${c.get("cpl", 0)}</span>
+<span style="color:#a0a0b8;width:80px;text-align:right">₪{c.get("cpl", 0)}</span>
 </div>'''
 
     html = f'''<!DOCTYPE html><html><head><meta charset="UTF-8"><style>
@@ -835,9 +844,9 @@ body{{background:#06060c;color:#e8e8f0;font-family:Arial,Helvetica,sans-serif;wi
 
 <div class="sec">Meta Ads</div>
 <div class="g4">
-<div class="card"><div class="cl">Расход</div><div class="cv" style="color:#ef4444">${fb_spend}</div><div class="cd">{d_fb_spend}</div></div>
+<div class="card"><div class="cl">Расход</div><div class="cv" style="color:#ef4444">₪{fb_spend}</div><div class="cd">{d_fb_spend}</div></div>
 <div class="card"><div class="cl">Лиды (FB)</div><div class="cv" style="color:#3b82f6">{fb_leads_total}</div><div class="cd">{d_fb_leads}</div></div>
-<div class="card"><div class="cl">CPL</div><div class="cv" style="color:#f0c040">${fb_cpl}</div><div class="cd">{d_fb_cpl}</div></div>
+<div class="card"><div class="cl">CPL</div><div class="cv" style="color:#f0c040">₪{fb_cpl}</div><div class="cd">{d_fb_cpl}</div></div>
 <div class="card"><div class="cl">CTR</div><div class="cv" style="color:#a855f7">{fb_ctr}%</div></div>
 </div>
 <div class="src-grid">{fb_source_cards}</div>
