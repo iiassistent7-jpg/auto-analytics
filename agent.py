@@ -134,31 +134,37 @@ def read_maya_leads(since=None, until=None):
         creds = get_google_creds()
         gc = gspread.authorize(creds)
         sh = gc.open_by_key(MAYA_LEADS_SHEET)
-        ws = sh.get_worksheet(0)
-        rows = ws.get_all_values()
-        if len(rows) < 2:
-            return []
+        all_worksheets = sh.worksheets()
         leads = []
-        for row in rows[1:]:
-            if len(row) < 3:
+        for ws in all_worksheets:
+            try:
+                rows = ws.get_all_values()
+            except:
                 continue
-            date_str = row[0] if len(row) > 0 else ""
-            name = row[1] if len(row) > 1 else ""
-            phone = row[2] if len(row) > 2 else ""
-            source = row[3] if len(row) > 3 else ""
-            comment = row[-1] if row[-1] else ""
-            dt = parse_date(date_str)
-            if dt and since and dt < since:
+            if len(rows) < 2:
                 continue
-            if dt and until and dt > until:
-                continue
-            is_lead_form = "Лид" in source or "лид" in source or "#" in source
-            leads.append({
-                "date": dt, "name": name, "phone": phone,
-                "source": "MayaCars",
-                "type": "lead_form" if is_lead_form else "message",
-                "comment": comment
-            })
+            for row in rows[1:]:
+                if len(row) < 3:
+                    continue
+                date_str = row[0] if len(row) > 0 else ""
+                name = row[1] if len(row) > 1 else ""
+                phone = row[2] if len(row) > 2 else ""
+                source = row[3] if len(row) > 3 else ""
+                comment = row[-1] if row[-1] else ""
+                dt = parse_date(date_str)
+                if dt and since and dt < since:
+                    continue
+                if dt and until and dt > until:
+                    continue
+                if not dt and not name and not phone:
+                    continue
+                is_lead_form = "Лид" in source or "лид" in source or "#" in source
+                leads.append({
+                    "date": dt, "name": name, "phone": phone,
+                    "source": "MayaCars",
+                    "type": "lead_form" if is_lead_form else "message",
+                    "comment": comment
+                })
         return leads
     except Exception as e:
         print(f"Error reading MayaLeads: {e}")
@@ -169,7 +175,14 @@ def read_carcity_leads(since=None, until=None):
         creds = get_google_creds()
         gc = gspread.authorize(creds)
         sh = gc.open_by_key(CARCITY_LEADS_SHEET)
-        ws = sh.get_worksheet(0)
+        # Try to find "Все лиды" worksheet, fallback to first
+        ws = None
+        for w in sh.worksheets():
+            if "все лиды" in w.title.lower() or "all" in w.title.lower():
+                ws = w
+                break
+        if not ws:
+            ws = sh.get_worksheet(0)
         rows = ws.get_all_values()
         if len(rows) < 2:
             return []
