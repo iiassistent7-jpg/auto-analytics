@@ -37,7 +37,6 @@ app = Flask(__name__)
 # GOOGLE AUTH
 # ============================================================
 def get_google_creds():
-    """Get Google credentials from env var or file."""
     scopes = [
         "https://www.googleapis.com/auth/spreadsheets.readonly",
         "https://www.googleapis.com/auth/calendar.readonly"
@@ -49,7 +48,7 @@ def get_google_creds():
     json_path = os.environ.get("GOOGLE_SA_KEY_PATH", "service_account.json")
     if os.path.exists(json_path):
         return Credentials.from_service_account_file(json_path, scopes=scopes)
-    raise Exception("No Google credentials found. Set GOOGLE_SERVICE_ACCOUNT_JSON or GOOGLE_SA_KEY_PATH")
+    raise Exception("No Google credentials found")
 
 # ============================================================
 # HELPERS
@@ -58,7 +57,6 @@ def get_israel_now():
     return datetime.now(timezone.utc) + timedelta(hours=ISRAEL_UTC_OFFSET)
 
 def parse_date(date_str):
-    """Parse various date formats from sheets."""
     if not date_str:
         return None
     date_str = str(date_str).strip()
@@ -102,11 +100,30 @@ def safe_send(chat_id, text, max_len=4000):
         except Exception as e:
             print(f"Send error: {e}")
 
+def calc_delta(current, previous):
+    """Calculate % change between periods. Returns (delta_pct, is_positive)."""
+    if previous == 0:
+        if current > 0:
+            return 100.0, True
+        return 0.0, True
+    delta = round((current - previous) / previous * 100, 1)
+    return abs(delta), delta >= 0
+
+def delta_html(current, previous, invert=False):
+    """Generate colored delta badge. invert=True means decrease is good (e.g. no-show rate)."""
+    pct, is_positive = calc_delta(current, previous)
+    if pct == 0:
+        return '<span style="color:#6b7280;font-size:16px;font-weight:700"> 0%</span>'
+    if invert:
+        is_positive = not is_positive
+    color = "#22c55e" if is_positive else "#ef4444"
+    arrow = "\u25b2" if (current >= previous) else "\u25bc"
+    return f'<span style="color:{color};font-size:16px;font-weight:700"> {arrow} {pct}%</span>'
+
 # ============================================================
 # DATA: GOOGLE SHEETS
 # ============================================================
 def read_maya_leads(since=None, until=None):
-    """Read MayaCars leads sheet."""
     try:
         creds = get_google_creds()
         gc = gspread.authorize(creds)
@@ -115,7 +132,6 @@ def read_maya_leads(since=None, until=None):
         rows = ws.get_all_values()
         if len(rows) < 2:
             return []
-        headers = rows[0]
         leads = []
         for row in rows[1:]:
             if len(row) < 3:
@@ -132,9 +148,7 @@ def read_maya_leads(since=None, until=None):
                 continue
             is_lead_form = "Лид" in source or "лид" in source or "#" in source
             leads.append({
-                "date": dt,
-                "name": name,
-                "phone": phone,
+                "date": dt, "name": name, "phone": phone,
                 "source": "MayaCars",
                 "type": "lead_form" if is_lead_form else "message",
                 "comment": comment
@@ -145,7 +159,6 @@ def read_maya_leads(since=None, until=None):
         return []
 
 def read_carcity_leads(since=None, until=None):
-    """Read CarCity/AutoMotors leads sheet."""
     try:
         creds = get_google_creds()
         gc = gspread.authorize(creds)
@@ -187,14 +200,10 @@ def read_carcity_leads(since=None, until=None):
                 src = page if page else "Unknown"
             is_lead_form = bool(page) and "сам" not in page_lower and "marketplace" not in page_lower
             leads.append({
-                "date": dt,
-                "name": name,
-                "phone": phone,
+                "date": dt, "name": name, "phone": phone,
                 "source": src,
                 "type": "lead_form" if is_lead_form else "message",
-                "placement": placement,
-                "city": city,
-                "comment": comment
+                "placement": placement, "city": city, "comment": comment
             })
         return leads
     except Exception as e:
@@ -202,7 +211,6 @@ def read_carcity_leads(since=None, until=None):
         return []
 
 def read_sales(since=None, until=None):
-    """Read sales table."""
     try:
         creds = get_google_creds()
         gc = gspread.authorize(creds)
@@ -215,11 +223,11 @@ def read_sales(since=None, until=None):
         for row in rows[1:]:
             if len(row) < 5:
                 continue
-            no = row[0].strip() if len(row) > 0 else ""
-            lid = row[1].strip() if len(row) > 1 else ""
-            name = row[2].strip() if len(row) > 2 else ""
-            phone = row[3].strip() if len(row) > 3 else ""
-            city = row[4].strip() if len(row) > 4 else ""
+            no = row[0].strip()
+            lid = row[1].strip()
+            name = row[2].strip()
+            phone = row[3].strip()
+            city = row[4].strip()
             notes = row[5].strip() if len(row) > 5 else ""
             status = row[6].strip() if len(row) > 6 else ""
             if not status or "УЕХАЛ" not in status.upper():
@@ -238,14 +246,8 @@ def read_sales(since=None, until=None):
             else:
                 src = lid if lid else "Unknown"
             car_info = notes.split(")")[0] + ")" if ")" in notes else notes[:50]
-            sales.append({
-                "name": name,
-                "phone": phone,
-                "city": city,
-                "source": src,
-                "car": car_info,
-                "notes": notes
-            })
+            sales.append({"name": name, "phone": phone, "city": city,
+                          "source": src, "car": car_info, "notes": notes})
         return sales
     except Exception as e:
         print(f"Error reading sales: {e}")
@@ -255,7 +257,6 @@ def read_sales(since=None, until=None):
 # DATA: GOOGLE CALENDAR
 # ============================================================
 def read_calendar_meetings(since=None, until=None):
-    """Read meetings from Google Calendar."""
     try:
         creds = get_google_creds()
         service = build("calendar", "v3", credentials=creds)
@@ -269,12 +270,8 @@ def read_calendar_meetings(since=None, until=None):
         page_token = None
         while True:
             result = service.events().list(
-                calendarId=CALENDAR_ID,
-                timeMin=time_min,
-                timeMax=time_max,
-                singleEvents=True,
-                orderBy="startTime",
-                maxResults=500,
+                calendarId=CALENDAR_ID, timeMin=time_min, timeMax=time_max,
+                singleEvents=True, orderBy="startTime", maxResults=500,
                 pageToken=page_token
             ).execute()
             events.extend(result.get("items", []))
@@ -300,12 +297,8 @@ def read_calendar_meetings(since=None, until=None):
             if duration_min <= 0:
                 continue
             status = "completed" if duration_min >= 50 else "no_show"
-            meetings.append({
-                "date": start_dt,
-                "summary": summary,
-                "duration_min": duration_min,
-                "status": status
-            })
+            meetings.append({"date": start_dt, "summary": summary,
+                             "duration_min": duration_min, "status": status})
         return meetings
     except Exception as e:
         print(f"Error reading calendar: {e}")
@@ -314,22 +307,8 @@ def read_calendar_meetings(since=None, until=None):
 # ============================================================
 # ANALYTICS
 # ============================================================
-def full_analytics(since=None, until=None):
-    """Gather all data and compute analytics."""
-    now = get_israel_now()
-    if not since:
-        since = now - timedelta(days=30)
-    if not until:
-        until = now
-    if isinstance(since, str):
-        since = parse_date(since) or (now - timedelta(days=30))
-    if isinstance(until, str):
-        until = parse_date(until) or now
-    if hasattr(since, 'tzinfo') and since.tzinfo:
-        since = since.replace(tzinfo=None)
-    if hasattr(until, 'tzinfo') and until.tzinfo:
-        until = until.replace(tzinfo=None)
-
+def compute_analytics(since, until):
+    """Core analytics computation for a given period."""
     maya_leads = read_maya_leads(since, until)
     cc_leads = read_carcity_leads(since, until)
     all_leads = maya_leads + cc_leads
@@ -347,9 +326,7 @@ def full_analytics(since=None, until=None):
     sales_by_source = {}
     for sale in sales:
         src = sale["source"]
-        if src not in sales_by_source:
-            sales_by_source[src] = 0
-        sales_by_source[src] += 1
+        sales_by_source[src] = sales_by_source.get(src, 0) + 1
 
     total_meetings = len(meetings)
     completed_meetings = sum(1 for m in meetings if m["status"] == "completed")
@@ -361,64 +338,68 @@ def full_analytics(since=None, until=None):
     lead_form_count = sum(1 for l in all_leads if l["type"] == "lead_form")
     message_count = sum(1 for l in all_leads if l["type"] == "message")
 
-    lead_phones = set()
-    for l in all_leads:
-        p = l.get("phone", "").replace("-", "").replace(" ", "").strip()
-        if p:
-            lead_phones.add(p[-7:])
-
-    sales_from_leads = 0
-    sales_from_other = 0
-    for s in sales:
-        p = s.get("phone", "").replace("-", "").replace(" ", "").strip()
-        if p and p[-7:] in lead_phones:
-            sales_from_leads += 1
-        else:
-            sales_from_other += 1
-
     lead_to_meeting = round(total_meetings / total_leads * 100, 1) if total_leads > 0 else 0
     meeting_to_sale = round(total_sales / completed_meetings * 100, 1) if completed_meetings > 0 else 0
     lead_to_sale = round(total_sales / total_leads * 100, 1) if total_leads > 0 else 0
 
-    data = {
+    return {
         "period": {"since": since.strftime("%Y-%m-%d"), "until": until.strftime("%Y-%m-%d")},
         "leads": {
-            "total": total_leads,
-            "maya_cars": len(maya_leads),
+            "total": total_leads, "maya_cars": len(maya_leads),
             "car_city_auto_motors": len(cc_leads),
             "by_source": leads_by_source,
-            "lead_form": lead_form_count,
-            "message": message_count
+            "lead_form": lead_form_count, "message": message_count
         },
         "meetings": {
-            "total": total_meetings,
-            "completed": completed_meetings,
-            "no_show": no_show_meetings,
-            "no_show_rate": no_show_rate
+            "total": total_meetings, "completed": completed_meetings,
+            "no_show": no_show_meetings, "no_show_rate": no_show_rate
         },
         "sales": {
-            "total": total_sales,
-            "by_source": sales_by_source,
-            "from_leads": sales_from_leads,
-            "from_other": sales_from_other
+            "total": total_sales, "by_source": sales_by_source,
         },
         "funnel": {
-            "leads": total_leads,
-            "meetings": total_meetings,
-            "completed_meetings": completed_meetings,
-            "sales": total_sales,
+            "leads": total_leads, "meetings": total_meetings,
+            "completed_meetings": completed_meetings, "sales": total_sales,
             "lead_to_meeting": lead_to_meeting,
             "meeting_to_sale": meeting_to_sale,
-            "lead_to_sale": lead_to_sale,
-            "no_show_rate": no_show_rate
+            "lead_to_sale": lead_to_sale, "no_show_rate": no_show_rate
         },
         "comparison": {
-            "lead_form_count": lead_form_count,
-            "message_count": message_count,
+            "lead_form_count": lead_form_count, "message_count": message_count,
             "lead_form_pct": round(lead_form_count / total_leads * 100, 1) if total_leads > 0 else 0,
             "message_pct": round(message_count / total_leads * 100, 1) if total_leads > 0 else 0
         }
     }
+
+def full_analytics(since=None, until=None):
+    """Gather analytics for current and previous period."""
+    now = get_israel_now()
+    if not since:
+        since = now - timedelta(days=30)
+    if not until:
+        until = now
+    if isinstance(since, str):
+        since = parse_date(since) or (now - timedelta(days=30))
+    if isinstance(until, str):
+        until = parse_date(until) or now
+    if hasattr(since, 'tzinfo') and since.tzinfo:
+        since = since.replace(tzinfo=None)
+    if hasattr(until, 'tzinfo') and until.tzinfo:
+        until = until.replace(tzinfo=None)
+
+    # Current period
+    data = compute_analytics(since, until)
+
+    # Previous period (same duration, right before)
+    duration = until - since
+    prev_until = since
+    prev_since = prev_until - duration
+    try:
+        prev_data = compute_analytics(prev_since, prev_until)
+    except:
+        prev_data = None
+
+    data["prev"] = prev_data
     return data
 
 # ============================================================
@@ -449,7 +430,7 @@ def call_claude(system_prompt, user_content, max_tokens=4000, retries=3):
 # ============================================================
 ANALYST_PROMPT = """Ты — аналитик автомобильного бизнеса. Анализируешь данные продаж б/у автомобилей в Израиле.
 
-Бизнес: 3 страницы (MayaCars в Instagram, Car City и Auto Motors в Facebook). Два кабинета в Meta Ads.
+Бизнес: 3 страницы (MayaCars в Instagram, Car City и Auto Motors в Facebook). Два кабинета в Meta Ads (3 рекламных аккаунта).
 Воронка: Лид (форма/переписка) → Звонок → Встреча (Google Calendar) → Продажа.
 В календаре: 30 мин = клиент не дошёл, 60 мин = встреча состоялась.
 
@@ -457,30 +438,41 @@ ANALYST_PROMPT = """Ты — аналитик автомобильного би�
 Не используй звёздочки (*), двойные звёздочки (**), подчёркивания (_), решётки (#), обратные кавычки (`) или любую Markdown-разметку. ТОЛЬКО чистый текст и эмодзи.
 
 СТИЛЬ:
-- Конкретные цифры, проценты, сравнения
+- Конкретные цифры, проценты, сравнения с предыдущим периодом
 - Рекомендации с конкретными действиями
 - Русский язык
 - 3-6 эмодзи к месту
 - Обращайся к Михаилу на "ты"
+
+ОБЯЗАТЕЛЬНО включай блок "Управление кампаниями":
+- Рекомендации по каждому источнику (увеличить/уменьшить бюджет/остановить)
+- Какие источники масштабировать
+- Где CPL слишком высокий (на основе соотношения лидов к конверсии)
 """
 
 def generate_report(data, report_type="full"):
-    prompt = f"Вот данные аналитики автобизнеса:\n\n{json.dumps(data, ensure_ascii=False, indent=2, default=str)}\n\n"
+    # Include previous period data for comparison
+    prev_info = ""
+    if data.get("prev"):
+        prev_info = f"\n\nДанные ПРЕДЫДУЩЕГО аналогичного периода для сравнения:\n{json.dumps(data['prev'], ensure_ascii=False, indent=2, default=str)}"
+
+    prompt = f"Вот данные аналитики автобизнеса:\n\n{json.dumps(data, ensure_ascii=False, indent=2, default=str)}{prev_info}\n\n"
 
     if report_type == "full":
         prompt += """Сделай полный отчёт:
-1. Общая картина — сколько лидов, встреч, продаж
+1. Общая картина — сколько лидов, встреч, продаж. Сравни с предыдущим периодом (рост/падение в %)
 2. Конверсия на каждом этапе воронки
-3. Сравнение источников (MayaCars vs CarCity vs AutoMotors vs Organic vs Marketplace vs TikTok)
+3. Сравнение источников (MayaCars vs CarCity vs AutoMotors vs Organic vs Marketplace vs TikTok) с динамикой
 4. Процент недошедших на встречу
 5. Сравнение лид-формы vs переписки — что эффективнее
-6. Конкретные рекомендации (3-5 штук)"""
+6. УПРАВЛЕНИЕ КАМПАНИЯМИ — рекомендации по каждому источнику: масштабировать, оптимизировать или остановить
+7. Конкретные рекомендации (3-5 штук)"""
     elif report_type == "funnel":
-        prompt += "Проанализируй воронку продаж. Где теряются клиенты? Какой этап слабый?"
+        prompt += "Проанализируй воронку продаж. Где теряются клиенты? Какой этап слабый? Сравни с предыдущим периодом."
     elif report_type == "sources":
-        prompt += "Сравни все источники лидов. Какой самый эффективный? Где стоит увеличить бюджет?"
+        prompt += "Сравни все источники лидов. Какой самый эффективный? Где стоит увеличить бюджет? Динамика по сравнению с предыдущим периодом."
     elif report_type == "meetings":
-        prompt += "Проанализируй встречи. Процент недошедших. Как снизить отмены?"
+        prompt += "Проанализируй встречи. Процент недошедших. Как снизить отмены? Сравни с предыдущим периодом."
 
     return call_claude(ANALYST_PROMPT, prompt)
 
@@ -496,6 +488,12 @@ def generate_dashboard_png(data):
     funnel = data.get("funnel", {})
     comparison = data.get("comparison", {})
     period = data.get("period", {})
+    prev = data.get("prev") or {}
+
+    prev_leads = prev.get("leads", {}) if prev else {}
+    prev_meetings = prev.get("meetings", {}) if prev else {}
+    prev_sales = prev.get("sales", {}) if prev else {}
+    prev_funnel = prev.get("funnel", {}) if prev else {}
 
     total_leads = leads.get("total", 0)
     total_meetings = meetings.get("total", 0)
@@ -505,43 +503,73 @@ def generate_dashboard_png(data):
     total_sales = sales.get("total", 0)
     lead_to_sale = funnel.get("lead_to_sale", 0)
 
+    # Previous period values
+    p_leads = prev_leads.get("total", 0)
+    p_meetings = prev_meetings.get("total", 0)
+    p_sales = prev_sales.get("total", 0)
+    p_lead_to_sale = prev_funnel.get("lead_to_sale", 0)
+    p_no_show_rate = prev_funnel.get("no_show_rate", 0)
+
     by_source = leads.get("by_source", {})
     sales_by_src = sales.get("by_source", {})
+    prev_by_source = prev_leads.get("by_source", {}) if prev_leads else {}
 
     period_label = f'{period.get("since", "")} — {period.get("until", "")}'
     now = get_israel_now()
     date_str = now.strftime("%d.%m.%Y %H:%M")
 
+    # Delta badges for top cards
+    d_leads = delta_html(total_leads, p_leads)
+    d_meetings = delta_html(total_meetings, p_meetings)
+    d_sales = delta_html(total_sales, p_sales)
+    d_conv = delta_html(lead_to_sale, p_lead_to_sale)
+
+    # Source cards with deltas
     source_cards = ""
-    sources = ["MayaCars", "CarCity", "AutoMotors", "TikTok", "Marketplace", "Organic"]
-    colors = {"MayaCars": "#f0c040", "CarCity": "#3b82f6", "AutoMotors": "#a855f7", "TikTok": "#ef4444", "Marketplace": "#22c55e", "Organic": "#6b7280"}
-    for src in sources:
+    sources_list = ["MayaCars", "CarCity", "AutoMotors", "TikTok", "Marketplace", "Organic"]
+    colors = {"MayaCars": "#f0c040", "CarCity": "#3b82f6", "AutoMotors": "#a855f7",
+              "TikTok": "#ef4444", "Marketplace": "#22c55e", "Organic": "#6b7280"}
+    for src in sources_list:
         src_data = by_source.get(src, {})
         cnt = src_data.get("total", 0) if isinstance(src_data, dict) else 0
         s_cnt = sales_by_src.get(src, 0)
         conv = round(s_cnt / cnt * 100, 1) if cnt > 0 else 0
         col = colors.get(src, "#6b7280")
+        # Previous
+        prev_src = prev_by_source.get(src, {})
+        p_cnt = prev_src.get("total", 0) if isinstance(prev_src, dict) else 0
+        d_src = delta_html(cnt, p_cnt)
         if cnt > 0 or s_cnt > 0:
-            source_cards += f'<div class="src-card"><div class="src-name" style="color:{col}">{src}</div><div class="src-row"><span class="src-l">Лиды</span><span class="src-v">{cnt}</span></div><div class="src-row"><span class="src-l">Продажи</span><span class="src-v">{s_cnt}</span></div><div class="src-row"><span class="src-l">Конверсия</span><span class="src-v" style="color:{col}">{conv}%</span></div></div>'
+            source_cards += f'''<div class="src-card">
+<div class="src-name" style="color:{col}">{src}</div>
+<div class="src-row"><span class="src-l">Лиды</span><span class="src-v">{cnt} {d_src}</span></div>
+<div class="src-row"><span class="src-l">Продажи</span><span class="src-v">{s_cnt}</span></div>
+<div class="src-row"><span class="src-l">Конверсия</span><span class="src-v" style="color:{col}">{conv}%</span></div>
+</div>'''
 
+    # Funnel pyramid (centered trapezoids narrowing down)
     funnel_steps = []
     if total_leads > 0:
         funnel_steps.append(("Лиды", total_leads, 100, "#3b82f6"))
     if total_meetings > 0:
-        funnel_steps.append(("Встречи", total_meetings, max(15, total_meetings/max(total_leads,1)*100), "#a855f7"))
+        pct_m = round(total_meetings / max(total_leads, 1) * 100, 1)
+        funnel_steps.append(("Встречи", total_meetings, max(60, 75), "#a855f7"))
     if completed > 0:
-        funnel_steps.append(("Состоялись", completed, max(12, completed/max(total_leads,1)*100), "#22c55e"))
-    if no_show > 0:
-        funnel_steps.append(("Не дошли", no_show, max(10, no_show/max(total_leads,1)*100), "#ef4444"))
+        funnel_steps.append(("Состоялись", completed, max(40, 55), "#22c55e"))
     if total_sales > 0:
-        funnel_steps.append(("Продажи", total_sales, max(8, total_sales/max(total_leads,1)*100), "#f0c040"))
+        funnel_steps.append(("Продажи", total_sales, max(20, 35), "#f0c040"))
 
     funnel_html = ""
     for i, (label, val, width, color) in enumerate(funnel_steps):
-        pct = ""
+        pct_label = ""
         if i > 0 and funnel_steps[i-1][1] > 0:
-            pct = f"{round(val / funnel_steps[i-1][1] * 100, 1)}%"
-        funnel_html += f'<div class="fs"><div class="fv">{pct}</div><div class="fw"><div class="fb" style="width:{width}%;background:{color}"><span class="ft">{val}</span></div></div><div class="fl">{label}</div></div>'
+            pct_label = f"{round(val / funnel_steps[i-1][1] * 100, 1)}%"
+        funnel_html += f'''<div style="display:flex;flex-direction:column;align-items:center;margin-bottom:4px">
+<div style="width:{width}%;height:60px;background:{color};border-radius:10px;display:flex;align-items:center;justify-content:center;position:relative">
+<span style="font-size:26px;font-weight:900;color:#fff">{val}</span>
+<span style="position:absolute;right:-90px;font-size:18px;font-weight:700;color:#e0e0f0;text-transform:uppercase;width:120px">{label}</span>
+<span style="position:absolute;left:-70px;font-size:17px;font-weight:700;color:#22c55e;width:60px;text-align:right">{pct_label}</span>
+</div></div>'''
 
     lf_count = comparison.get("lead_form_count", 0)
     msg_count = comparison.get("message_count", 0)
@@ -553,73 +581,70 @@ def generate_dashboard_png(data):
 body{{background:#06060c;color:#e8e8f0;font-family:Arial,Helvetica,sans-serif;width:1280px;overflow:hidden}}
 .db{{max-width:1240px;margin:0 auto;padding:32px 20px 24px}}
 .hd{{text-align:center;margin-bottom:36px}}
-.lg{{font-size:44px;font-weight:900;color:#f0c040}}
-.badge{{display:inline-block;padding:12px 28px;border:1px solid rgba(255,255,255,.1);border-radius:24px;font-size:20px;font-weight:700;color:#a0a0b8;background:rgba(18,18,28,.85);margin-top:12px}}
+.lg{{font-size:52px;font-weight:900;color:#f0c040}}
+.badge{{display:inline-block;padding:16px 36px;border:2px solid rgba(240,192,64,.4);border-radius:28px;font-size:28px;font-weight:900;color:#f0c040;background:rgba(18,18,28,.85);margin-top:14px;letter-spacing:1px}}
 .sb{{display:flex;align-items:center;justify-content:center;gap:10px;margin-top:18px}}
 .sd{{width:10px;height:10px;border-radius:50%}}
 .stx{{font-size:20px;font-weight:800;letter-spacing:2px}}
 .sec{{font-size:22px;font-weight:700;color:#e8e8f0;letter-spacing:4px;text-transform:uppercase;margin:36px 0 18px;text-align:center}}
 .g4{{display:flex;gap:14px;margin-bottom:14px}}
 .g4 .card{{flex:1}}
-.g3{{display:flex;gap:14px;margin-bottom:14px}}
-.g3 .card{{flex:1}}
 .card{{background:rgba(18,18,28,.85);border:1px solid rgba(255,255,255,.08);border-radius:18px;padding:24px;text-align:center}}
-.cl{{font-size:18px;color:#a0a0b8;font-weight:700;text-transform:uppercase;letter-spacing:2px;margin-bottom:10px}}
-.cv{{font-size:48px;font-weight:800;line-height:1}}
+.cl{{font-size:16px;color:#a0a0b8;font-weight:700;text-transform:uppercase;letter-spacing:2px;margin-bottom:8px}}
+.cv{{font-size:44px;font-weight:800;line-height:1}}
+.cd{{margin-top:6px}}
 .fcard{{background:rgba(18,18,28,.85);border:1px solid rgba(255,255,255,.08);border-radius:18px;padding:28px 24px;margin-bottom:14px}}
-.fn{{max-width:700px;margin:0 auto}}
-.fs{{display:flex;align-items:center;width:100%;gap:12px;margin-bottom:6px}}
-.fw{{flex:1}}
-.fb{{height:56px;border-radius:12px;display:flex;align-items:center;justify-content:center}}
-.ft{{font-size:28px;font-weight:800;color:#fff}}
-.fl{{font-size:20px;color:#e0e0f0;font-weight:700;text-transform:uppercase;width:180px}}
-.fv{{font-size:20px;font-weight:700;width:80px;text-align:right;color:#22c55e}}
+.fn{{max-width:800px;margin:0 auto;padding:0 100px}}
 .src-grid{{display:flex;flex-wrap:wrap;gap:14px;margin-bottom:14px}}
-.src-card{{flex:1;min-width:200px;background:rgba(18,18,28,.85);border:1px solid rgba(255,255,255,.08);border-radius:18px;padding:24px}}
-.src-name{{font-size:22px;font-weight:800;margin-bottom:14px;text-align:center}}
-.src-row{{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid rgba(255,255,255,.04)}}
-.src-l{{font-size:16px;color:#a0a0b8}}
-.src-v{{font-size:18px;font-weight:700}}
-.comp-bar{{display:flex;height:56px;border-radius:14px;overflow:hidden;margin:12px 0}}
-.comp-seg{{display:flex;align-items:center;justify-content:center;font-size:20px;font-weight:700;color:#fff}}
+.src-card{{flex:1;min-width:180px;background:rgba(18,18,28,.85);border:1px solid rgba(255,255,255,.08);border-radius:18px;padding:20px}}
+.src-name{{font-size:20px;font-weight:800;margin-bottom:12px;text-align:center}}
+.src-row{{display:flex;justify-content:space-between;align-items:center;padding:5px 0;border-bottom:1px solid rgba(255,255,255,.04)}}
+.src-l{{font-size:14px;color:#a0a0b8}}
+.src-v{{font-size:16px;font-weight:700}}
+.comp-bar{{display:flex;height:50px;border-radius:14px;overflow:hidden;margin:12px 0}}
+.comp-seg{{display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:700;color:#fff}}
 .pill-grid{{display:flex;gap:14px}}
-.pill{{flex:1;background:rgba(18,18,28,.85);border:1px solid rgba(255,255,255,.08);border-radius:14px;padding:20px;text-align:center}}
-.pill-l{{font-size:18px;color:#e0e0f0;font-weight:700;text-transform:uppercase;letter-spacing:2px;margin-bottom:10px}}
-.pill-v{{font-size:44px;font-weight:900}}
+.pill{{flex:1;background:rgba(18,18,28,.85);border:1px solid rgba(255,255,255,.08);border-radius:14px;padding:18px;text-align:center}}
+.pill-l{{font-size:16px;color:#e0e0f0;font-weight:700;text-transform:uppercase;letter-spacing:2px;margin-bottom:8px}}
+.pill-v{{font-size:40px;font-weight:900}}
 .footer{{text-align:center;padding:24px 0 8px;font-size:12px;color:#3a3a50;letter-spacing:2px;text-transform:uppercase}}
 </style></head><body><div class="db">
 <div class="hd">
 <div class="lg">AutoAnalytics</div>
 <div class="badge">{period_label}</div>
 <div class="sb"><div class="sd" style="background:#22c55e;box-shadow:0 0 12px rgba(34,197,94,.5)"></div><div class="stx" style="color:#22c55e">АВТОБИЗНЕС</div></div></div>
+
 <div class="sec">Общая воронка</div>
 <div class="g4">
-<div class="card"><div class="cl">Лиды</div><div class="cv" style="color:#3b82f6">{total_leads}</div></div>
-<div class="card"><div class="cl">Встречи</div><div class="cv" style="color:#a855f7">{total_meetings}</div></div>
-<div class="card"><div class="cl">Продажи</div><div class="cv" style="color:#22c55e">{total_sales}</div></div>
-<div class="card"><div class="cl">Конверсия</div><div class="cv" style="color:#f0c040">{lead_to_sale}%</div></div></div>
+<div class="card"><div class="cl">Лиды</div><div class="cv" style="color:#3b82f6">{total_leads}</div><div class="cd">{d_leads}</div></div>
+<div class="card"><div class="cl">Встречи</div><div class="cv" style="color:#a855f7">{total_meetings}</div><div class="cd">{d_meetings}</div></div>
+<div class="card"><div class="cl">Продажи</div><div class="cv" style="color:#22c55e">{total_sales}</div><div class="cd">{d_sales}</div></div>
+<div class="card"><div class="cl">Конверсия</div><div class="cv" style="color:#f0c040">{lead_to_sale}%</div><div class="cd">{d_conv}</div></div>
+</div>
+
 <div class="sec">Воронка продаж</div>
 <div class="fcard"><div class="fn">{funnel_html}</div>
-<div style="display:flex;justify-content:center;gap:40px;margin-top:24px;font-size:24px;font-weight:800">
+<div style="display:flex;justify-content:center;gap:40px;margin-top:20px;font-size:22px;font-weight:800">
 <span style="color:#22c55e">Конверсия: {lead_to_sale}%</span>
-<span style="color:#ef4444">Недошедшие: {no_show_rate}%</span></div></div>
+<span style="color:#ef4444">Недошедшие: {no_show_rate}% {delta_html(no_show_rate, p_no_show_rate, invert=True)}</span>
+</div></div>
+
 <div class="sec">Источники</div>
 <div class="src-grid">{source_cards}</div>
+
 <div class="sec">Лид-форма vs Переписка</div>
 <div class="fcard"><div class="comp-bar">
 <div class="comp-seg" style="width:{max(lf_pct,5)}%;background:#3b82f6">Формы: {lf_count} ({lf_pct}%)</div>
 <div class="comp-seg" style="width:{max(msg_pct,5)}%;background:#a855f7">Переписка: {msg_count} ({msg_pct}%)</div></div></div>
-<div class="sec">Встречи</div>
-<div class="g3">
-<div class="card"><div class="cl">Всего встреч</div><div class="cv" style="color:#a855f7">{total_meetings}</div></div>
-<div class="card"><div class="cl">Состоялись</div><div class="cv" style="color:#22c55e">{completed}</div></div>
-<div class="card"><div class="cl">Не дошли</div><div class="cv" style="color:#ef4444">{no_show}</div></div></div>
+
 <div class="sec">Ключевые показатели</div>
 <div class="pill-grid">
-<div class="pill"><div class="pill-l">Лид-Встреча</div><div class="pill-v" style="color:#a855f7">{funnel.get("lead_to_meeting", 0)}%</div></div>
-<div class="pill"><div class="pill-l">Встреча-Продажа</div><div class="pill-v" style="color:#22c55e">{funnel.get("meeting_to_sale", 0)}%</div></div>
-<div class="pill"><div class="pill-l">Лид-Продажа</div><div class="pill-v" style="color:#f0c040">{lead_to_sale}%</div></div>
-<div class="pill"><div class="pill-l">Не дошли</div><div class="pill-v" style="color:#ef4444">{no_show_rate}%</div></div></div>
+<div class="pill"><div class="pill-l">Лид-Встреча</div><div class="pill-v" style="color:#a855f7">{funnel.get("lead_to_meeting", 0)}%</div><div class="cd">{delta_html(funnel.get("lead_to_meeting", 0), prev_funnel.get("lead_to_meeting", 0))}</div></div>
+<div class="pill"><div class="pill-l">Встреча-Продажа</div><div class="pill-v" style="color:#22c55e">{funnel.get("meeting_to_sale", 0)}%</div><div class="cd">{delta_html(funnel.get("meeting_to_sale", 0), prev_funnel.get("meeting_to_sale", 0))}</div></div>
+<div class="pill"><div class="pill-l">Лид-Продажа</div><div class="pill-v" style="color:#f0c040">{lead_to_sale}%</div><div class="cd">{d_conv}</div></div>
+<div class="pill"><div class="pill-l">Не дошли</div><div class="pill-v" style="color:#ef4444">{no_show_rate}%</div><div class="cd">{delta_html(no_show_rate, p_no_show_rate, invert=True)}</div></div>
+</div>
+
 <div class="footer">AutoAnalytics Dashboard · {date_str}</div>
 </div></body></html>'''
 
@@ -630,7 +655,7 @@ body{{background:#06060c;color:#e8e8f0;font-family:Arial,Helvetica,sans-serif;wi
     try:
         subprocess.run([
             "chromium", "--headless", "--disable-gpu", "--no-sandbox",
-            "--window-size=1280,2000", "--screenshot=" + png_path,
+            "--window-size=1280,1800", "--screenshot=" + png_path,
             "--default-background-color=00000000",
             "file://" + html_path
         ], check=True, timeout=30, capture_output=True)
@@ -657,9 +682,7 @@ INTENT_PROMPT = """Ты определяешь намерение пользов
 - "today" / "yesterday" / "week" / "month" / "3months" / "all"
 По умолчанию "month"
 
-Формат ответа: INTENT PERIOD
-Пример: full_report month
-Пример: dashboard week"""
+Формат ответа: INTENT PERIOD"""
 
 def detect_intent(text):
     text_lower = text.lower()
@@ -667,7 +690,7 @@ def detect_intent(text):
         intent = "dashboard"
     elif any(w in text_lower for w in ["воронк", "funnel", "конверси"]):
         intent = "funnel"
-    elif any(w in text_lower for w in ["источник", "страниц", "source", "майя", "карсити", "автомотор"]):
+    elif any(w in text_lower for w in ["источник", "страниц", "source", "майя", "карсити", "автомотор", "кампани"]):
         intent = "sources"
     elif any(w in text_lower for w in ["встреч", "недошед", "не дошёл", "не пришёл", "meeting"]):
         intent = "meetings"
@@ -822,7 +845,8 @@ def handle_text(message):
     user_text = message.text.strip()
     intent, period = detect_intent(user_text)
     since, until = get_period_dates(period)
-    period_names = {"today": "Сегодня", "yesterday": "Вчера", "week": "Неделя", "month": "Месяц", "3months": "3 месяца", "all": "Всё время"}
+    period_names = {"today": "Сегодня", "yesterday": "Вчера", "week": "Неделя",
+                    "month": "Месяц", "3months": "3 месяца", "all": "Всё время"}
     plabel = period_names.get(period, "Месяц")
 
     if intent == "dashboard":
@@ -870,7 +894,6 @@ def handle_voice(message):
 # ============================================================
 @app.route(f"/{TELEGRAM_TOKEN}", methods=["POST"])
 def webhook():
-    """Receive updates from Telegram via webhook."""
     if flask_request.headers.get("content-type") == "application/json":
         json_data = flask_request.get_data().decode("utf-8")
         update = telebot.types.Update.de_json(json_data)
@@ -880,7 +903,6 @@ def webhook():
 
 @app.route("/", methods=["GET"])
 def health():
-    """Health check endpoint."""
     return "AutoAnalytics Bot is running!", 200
 
 # ============================================================
@@ -889,16 +911,10 @@ def health():
 if __name__ == "__main__":
     print("🚗 АВТОАНАЛИТИК НА ПОСТУ!")
     print(f"📅 {get_israel_now().strftime('%Y-%m-%d %H:%M')}")
-
-    # Remove any existing webhook and polling
     bot.remove_webhook()
     time.sleep(1)
-
-    # Set webhook
     webhook_url = f"https://{RAILWAY_PUBLIC_DOMAIN}/{TELEGRAM_TOKEN}"
     bot.set_webhook(url=webhook_url)
     print(f"🔗 Webhook: {webhook_url}")
-
-    # Start Flask server
     print(f"🌐 Flask on port {PORT}")
     app.run(host="0.0.0.0", port=PORT)
